@@ -14,7 +14,10 @@ async def test_health_and_documented_contract() -> None:
         assert response.status_code == 200
         assert response.json() == {"status": "ok", "service": "weft-engine"}
         schema = (await client.get("/openapi.json")).json()
-        assert set(schema["paths"]) == {"/health"}
+        assert "/health" in schema["paths"]
+        assert (
+            "/v1/organizations/{organizationId}/events/{eventId}/matching-runs" in schema["paths"]
+        )
         assert (await client.get("/docs")).status_code == 200
 
 

@@ -1,6 +1,6 @@
 POETRY ?= poetry
 
-.PHONY: install dev start check-docs lint format format-check typecheck test verify-fast verify
+.PHONY: install dev start worker check-docs lint format format-check typecheck test verify-fast verify
 
 install:
 	$(POETRY) sync
@@ -10,6 +10,9 @@ dev:
 
 start:
 	$(POETRY) run uvicorn src.main:create_app --factory --host 0.0.0.0 --port 8000
+
+worker:
+	$(POETRY) run python -m src.matching.worker
 
 check-docs:
 	$(POETRY) run python scripts/check_harness.py

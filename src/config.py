@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +20,7 @@ class Settings(BaseSettings):
         env_prefix="WEFT_",
         env_file=".env",
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         extra="ignore",
         frozen=True,
     )
@@ -27,6 +28,20 @@ class Settings(BaseSettings):
     environment: Environment = Environment.DEVELOPMENT
     docs_enabled: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    matching_database_url: SecretStr | None = None
+    console_database_url: SecretStr | None = None
+    matching_service_tokens: dict[str, list[str]] = Field(default_factory=dict)
+    openai_api_key: SecretStr | None = None
+    matching_embedding_model: str = "text-embedding-3-large"
+    matching_evaluation_model: str = "gpt-6.1-sol"
+    matching_prompt_version: str = "f06-rubric-v1"
+    matching_policy_version: str = "f06-policy-v1"
+    matching_max_spend_usd: float = 0.0
+    matching_input_cost_per_million_usd: float = 0.0
+    matching_output_cost_per_million_usd: float = 0.0
+    matching_worker_id: str = "weft-matching-worker"
+    matching_provider_concurrency: int = Field(default=2, ge=1, le=8)
+    matching_embedding_cost_per_million_usd: float = 0.0
 
     @model_validator(mode="after")
     def protect_production_docs(self) -> Settings:

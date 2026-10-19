@@ -15,6 +15,13 @@ def test_environment_overrides_dotenv(tmp_path: Path, monkeypatch: pytest.Monkey
     assert settings.log_level == "ERROR"
 
 
+def test_blank_matching_settings_in_example_remain_unset() -> None:
+    settings = Settings(_env_file=Path(__file__).parents[1] / ".env.example")
+    assert settings.matching_database_url is None
+    assert settings.console_database_url is None
+    assert settings.openai_api_key is None
+
+
 def test_production_requires_explicit_docs_disable() -> None:
     with pytest.raises(ValidationError, match="WEFT_DOCS_ENABLED=false"):
         Settings(_env_file=None, environment=Environment.PRODUCTION, docs_enabled=True)
