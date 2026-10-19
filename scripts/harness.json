@@ -1,0 +1,29 @@
+{
+  "agents": "AGENTS.md",
+  "maxAgentLines": 100,
+  "activePlans": "docs/exec-plans/active",
+  "required": [
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "README.md",
+    "docs/README.md",
+    "docs/product.md",
+    "docs/domain.md",
+    "docs/engineering.md",
+    "docs/design/design.md",
+    "docs/PLANS.md",
+    "docs/VERIFICATION.md",
+    "docs/HOOKS.md",
+    "docs/changes/README.md",
+    "docs/exec-plans/active",
+    "docs/exec-plans/completed",
+    "docs/exec-plans/tech-debt-tracker.md",
+    "skills/README.md",
+    "skills/harness-maintenance/SKILL.md",
+    "skills/verification-handoff/SKILL.md",
+    "skills/contextual-commits/SKILL.md",
+    ".githooks/pre-commit",
+    ".githooks/pre-push"
+  ],
+  "markdownRoots": ["AGENTS.md", "ARCHITECTURE.md", "README.md", "docs", "skills"]
+}
