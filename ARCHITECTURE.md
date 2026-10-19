@@ -18,6 +18,8 @@ src/
     models.py          engine-owned weft_engine records
     worker.py          leased worker and live provider pipeline
     selection.py       evidence gates and CP-SAT selection
+    changes.py         F07 change ingestion, coalescing, retry, revocation, status and feed reads
+    status_router.py   F07 per-event status and recommendation feed
 tests/                 runtime, contracts, selection, and configuration checks
 migrations/            explicit Alembic migrations limited to weft_engine
 scripts/               dependency-light documentation checker and fixtures
@@ -43,18 +45,22 @@ Async routes and dependencies must use nonblocking I/O. Wrap unavoidable synchro
 
 F06 owns immutable run snapshots, PostgreSQL leased jobs, provider attempts, cached embeddings/evaluations, recommendation records, and slot grants. Alembic migrations create only `weft_engine`; Console tables remain in their existing schema and are queried through explicit SQL projections. `poetry run python -m src.matching.worker` starts a separate worker. Matching outputs remain recommendations, never authoritative introductions. The worker checks Console snapshot freshness before publication, holds linked duplicate identities, verifies evidence quotations against source fields, and filters organizer-only evidence from result responses.
 
-Runtime database roles must have Console `SELECT` access only to required event/profile/restriction tables and `SELECT`/`INSERT`/`UPDATE` access to `weft_engine`. The migration credential alone creates or changes the engine schema. The service does not migrate at startup. Database URLs target the Console PostgreSQL database while preserving existing tables outside `weft_engine`.
+Runtime database roles must have Console `SELECT` access only to required event/profile/restriction tables (plus, for F07, `SELECT` on `public.event_matching_changes` and a column-level `UPDATE (processed_at)`) and `SELECT`/`INSERT`/`UPDATE` access to `weft_engine`. The migration credential alone creates or changes the engine schema. The service does not migrate at startup. Database URLs target the Console PostgreSQL database while preserving existing tables outside `weft_engine`.
 
-Lifecycle context is supplied by the authenticated service caller and cannot be refreshed from Console-owned records that do not exist. F07/F08 must define and supply authoritative lifecycle freshness and recheck before introduction creation.
+Lifecycle context is supplied by the authenticated service caller and cannot be refreshed from Console-owned records that do not exist. Automatic F07 runs supply an explicitly complete but empty lifecycle (`lifecycle_source: console_none_recorded`); F08 must define and supply authoritative lifecycle freshness and recheck before introduction creation.
 
 ## Future capability boundaries
 
-F06 matching is implemented in the matching domain. F07 will own durable change consumption, deduplication, coalescing, retry/recovery, status, and result delivery. Reuse domains when these responsibilities remain cohesive; do not precreate packages from this description.
+F06 matching and F07 automatic updates are implemented in the matching domain. F07 owns durable change consumption, deduplication, coalescing, retry/recovery, revocation, status, and result delivery; do not precreate packages beyond this.
 
 F08 consumes valid selected pairs to create authoritative introduction records and expose match-list data in the product. The engine supplies versioned, traceable results. Creating authoritative matches, guest acceptance, Wefter assignments, meeting outcomes, and UI remain separate product operations. Final service contracts must resolve ownership before implementing cross-service writes.
 
 The engine should own run snapshots, attempts, provider metadata, and result-delivery state. Event/guest identities, participation, profiles, restrictions, accepted/active/completed introductions remain authoritative upstream. Do not share mutable ORM models or take ownership of those records implicitly. See [domain](docs/domain.md) for identifiers and trust boundaries.
 
-F07 change ingestion and result delivery remain future work. Do not add them to the F06 worker queue.
+## F07 automatic updates
+
+When `WEFT_MATCHING_AUTOMATIC_ENABLED` is true the worker loop runs, before claiming a run: `ingest` (copy unprocessed rows of `public.event_matching_changes` into `matching_change_receipts` with `ON CONFLICT DO NOTHING`, then set `processed_at` on the Console row), `settle` (complete a batch whose run finished; otherwise apply `retry_decision` to plan the next attempt or abandon), and `schedule` (for each event whose newest change is 30 seconds old, or whose oldest has waited 300 seconds, and that has no waiting or running run or unfinished batch). `schedule` runs under the per-event `pg_advisory_xact_lock` in one engine transaction: it creates a `matching_change_batches` row, attaches the receipts read before the fresh Console snapshot, revokes ineligible recommendations, and creates one run with `trigger='change'` and idempotency key `f07:{batchId}:{attempt}`. Backoff retries reuse the batch, attach changes received meanwhile, and count toward the cap.
+
+Revocation (`revocations()` in `changes.py`) applies only to hard ineligibility, at schedule time and again inside the publication transaction, so an exclusion takes effect even when the provider run fails. Revoked rows keep their pair, free capacity, and still count as prior pairs. `issued` and `revoked` entries are appended to `matching_feed_entries` under the event lock, so `seq` order within an event is commit order; `UNIQUE(recommendation_id, kind)` makes writes idempotent. The Console reads state through `GET .../matching/status` and F08 will consume `GET .../matching/feed`; see the [service API](docs/matching-api.md).
 
 Durable architecture decisions belong in this file and the owning reference. Use the [planning policy](docs/PLANS.md) for future implementation work; historical plans never override current product requirements.

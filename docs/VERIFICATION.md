@@ -12,6 +12,7 @@ Run commands from the repository root with Python 3.14, Poetry 2.2+, Make, and i
 | `make test` | pytest runtime/configuration, documentation-checker, and hook-dispatch tests; application branch coverage |
 | `make verify-fast` | Documentation, lint, formatting, and types |
 | `make verify` | All fast checks plus tests |
+| `WEFT_ENGINE_DATABASE_TEST=1 WEFT_ENGINE_TEST_DATABASE_URL=... pytest tests/test_changes_database.py` | Opt-in F07 PostgreSQL integration; needs an explicitly disposable, empty database whose name contains `test` |
 
 `make format` is an explicit source mutation. Checks and hooks do not fix, stage, or rewrite source. No dummy build command exists: this service runs directly through Uvicorn and uses Poetry only for application dependency management.
 

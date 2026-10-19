@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -95,6 +96,11 @@ class ResultItem(APIModel):
     missing_information: dict[str, list[str]]
     uncertainty: str
     shareable_reasons: dict[str, str | None]
+    revoked_at: datetime | None = None
+    revocation_reason: (
+        Literal["guest_excluded", "pair_blocked", "identity_resolution_required", "guest_missing"]
+        | None
+    ) = None
 
 
 class ResultsResponse(APIModel):
@@ -104,3 +110,33 @@ class ResultsResponse(APIModel):
     source_run_id: UUID
     guest_reasons: dict[str, str]
     recommendations: list[ResultItem]
+
+
+class RunSummary(APIModel):
+    run_id: UUID
+    status: Literal["waiting", "running", "failed", "finished", "invalid_result"]
+    trigger: Literal["api", "change"]
+    failure: dict[str, str | None] | None
+    created_at: datetime
+    finished_at: datetime | None
+
+
+class MatchingStatus(APIModel):
+    state: Literal["idle", "waiting", "running", "failed", "finished", "invalid_result"]
+    pending_changes: int
+    latest_run: RunSummary | None
+    last_finished_run_id: UUID | None
+    next_attempt_at: datetime | None
+    automatic_enabled: bool
+
+
+class FeedEntryOut(APIModel):
+    seq: int
+    kind: Literal["issued", "revoked"]
+    run_id: UUID | None
+    recommendation: ResultItem
+
+
+class FeedResponse(APIModel):
+    entries: list[FeedEntryOut]
+    next_cursor: int

@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     matching_worker_id: str = "weft-matching-worker"
     matching_provider_concurrency: int = Field(default=2, ge=1, le=8)
     matching_embedding_cost_per_million_usd: float = 0.0
+    matching_automatic_enabled: bool = False
+    matching_change_quiet_seconds: int = Field(default=30, ge=0)
+    matching_change_max_wait_seconds: int = Field(default=300, ge=0)
+    matching_change_retry_limit: int = Field(default=3, ge=0, le=10)
+    matching_change_poll_limit: int = Field(default=500, ge=1, le=5000)
 
     @model_validator(mode="after")
     def protect_production_docs(self) -> Settings:

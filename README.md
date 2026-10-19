@@ -1,6 +1,6 @@
 # Weft Engine
 
-FastAPI backend for Weft matching and related operations. F06 implements authenticated run APIs, engine-owned PostgreSQL persistence, a read-only Console adapter, and a separate live AI worker. F06 remains active pending isolated database, live-provider, and expert-reviewed quality acceptance. F07 automatic updates and F08 authoritative pair creation remain future scope.
+FastAPI backend for Weft matching and related operations. F06 implements authenticated run APIs, engine-owned PostgreSQL persistence, a read-only Console adapter, and a separate live AI worker. F06 remains active pending isolated database, live-provider, and expert-reviewed quality acceptance. F07 adds Console change polling, coalesced automatic runs with retry, recommendation revocation, a status endpoint and a pull feed; it is off by default and its acceptance is tracked in the active F07 plan. F08 authoritative pair creation remains future scope.
 
 ## Local development
 

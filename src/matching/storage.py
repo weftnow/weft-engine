@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from src.config import Settings
 from src.matching.console import ConsoleAdapter
 from src.matching.models import Recommendation, Run, SlotGrant
 from src.matching.schemas import CreateRun
@@ -28,6 +29,97 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def provenance_from_settings(settings: Settings) -> dict[str, str]:
+    return {
+        "embedding_model": settings.matching_embedding_model,
+        "evaluation_model": settings.matching_evaluation_model,
+        "prompt_version": settings.matching_prompt_version,
+        "policy_version": settings.matching_policy_version,
+    }
+
+
+def check_event_size(snapshot: dict[str, Any]) -> None:
+    eligible = sum(
+        1
+        for guest in snapshot["guests"]
+        if guest["networking_status"] == "included" and not guest["identity_resolution_required"]
+    )
+    if eligible > 300:
+        raise ValueError("event_guest_limit_exceeded")
+
+
+def run_payload(
+    snapshot: dict[str, Any], lifecycle: dict[str, Any], policy_version: str
+) -> dict[str, Any]:
+    return {"console": snapshot, "lifecycle": lifecycle, "policy_version": policy_version}
+
+
+async def lock_event(session: AsyncSession, event_id: UUID) -> None:
+    """Serialize run creation, capacity allocation and feed writes for one event."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:event,0))"),
+        {"event": str(event_id)},
+    )
+
+
+async def create_run(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    event_id: UUID,
+    idempotency_key: str,
+    mode: str,
+    target_guest_id: UUID | None,
+    payload: dict[str, Any],
+    provenance: dict[str, str],
+    trigger: str = "api",
+    change_batch_id: UUID | None = None,
+) -> Run:
+    """Insert a waiting run, or return the one saved under this key.
+
+    The caller must hold the event advisory lock inside an open transaction.
+    """
+    prior = await session.scalar(
+        select(Run).where(
+            Run.organization_id == organization_id,
+            Run.event_id == event_id,
+            Run.idempotency_key == idempotency_key,
+        )
+    )
+    if prior is not None:
+        return prior
+    run = Run(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        event_id=event_id,
+        idempotency_key=idempotency_key,
+        mode=mode,
+        target_guest_id=target_guest_id,
+        status="waiting",
+        snapshot=payload,
+        fingerprint=fingerprint(payload),
+        progress={"stage": "waiting"},
+        provenance=provenance,
+        usage={},
+        trigger=trigger,
+        change_batch_id=change_batch_id,
+    )
+    session.add(run)
+    if mode == "more" and target_guest_id is not None:
+        session.add(
+            SlotGrant(
+                id=uuid.uuid4(),
+                organization_id=organization_id,
+                event_id=event_id,
+                guest_id=target_guest_id,
+                request_key=idempotency_key,
+                slots=3,
+            )
+        )
+    await session.flush()
+    return run
+
+
 async def submit_run(
     sessions: async_sessionmaker[AsyncSession],
     console: ConsoleAdapter,
@@ -41,13 +133,7 @@ async def submit_run(
     if actual_org != organization_id:
         raise LookupError("event_not_found")
     snapshot = await console.snapshot(organization_id, event_id)
-    eligible_guest_ids = {
-        UUID(guest["id"])
-        for guest in snapshot["guests"]
-        if guest["networking_status"] == "included" and not guest["identity_resolution_required"]
-    }
-    if len(eligible_guest_ids) > 300:
-        raise ValueError("event_guest_limit_exceeded")
+    check_event_size(snapshot)
     event_guest_ids = {UUID(guest["id"]) for guest in snapshot["guests"]}
     for pair_group in (
         request.lifecycle.prior_decisions,
@@ -67,54 +153,23 @@ async def submit_run(
             raise ValueError("identity_resolution_required")
         if target["networking_status"] != "included":
             raise ValueError("guest_not_eligible")
-    payload = {
-        "console": snapshot,
-        "lifecycle": request.lifecycle.model_dump(mode="json", by_alias=False),
-        "policy_version": service_provenance["policy_version"],
-    }
+    payload = run_payload(
+        snapshot,
+        request.lifecycle.model_dump(mode="json", by_alias=False),
+        service_provenance["policy_version"],
+    )
     async with sessions() as session, session.begin():
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:event,0))"),
-            {"event": str(event_id)},
-        )
-        prior = await session.scalar(
-            select(Run).where(
-                Run.organization_id == organization_id,
-                Run.event_id == event_id,
-                Run.idempotency_key == idempotency_key,
-            )
-        )
-        if prior is not None:
-            return prior
-        run_id = uuid.uuid4()
-        run = Run(
-            id=run_id,
+        await lock_event(session, event_id)
+        return await create_run(
+            session,
             organization_id=organization_id,
             event_id=event_id,
             idempotency_key=idempotency_key,
             mode=request.mode,
             target_guest_id=request.target_guest_id,
-            status="waiting",
-            snapshot=payload,
-            fingerprint=fingerprint(payload),
-            progress={"stage": "waiting"},
+            payload=payload,
             provenance=service_provenance,
-            usage={},
         )
-        session.add(run)
-        if request.mode == "more" and request.target_guest_id is not None:
-            session.add(
-                SlotGrant(
-                    id=uuid.uuid4(),
-                    organization_id=organization_id,
-                    event_id=event_id,
-                    guest_id=request.target_guest_id,
-                    request_key=idempotency_key,
-                    slots=3,
-                )
-            )
-        await session.flush()
-        return run
 
 
 async def scoped_run(
