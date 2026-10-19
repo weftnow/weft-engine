@@ -25,17 +25,27 @@ Run `make dev` for reload on `127.0.0.1:8000`, or `make start` for Uvicorn witho
 | `WEFT_ENVIRONMENT` | `development` | `development`, `test`, or `production`; invalid values fail startup |
 | `WEFT_DOCS_ENABLED` | `true` | Swagger and OpenAPI routes; must be explicitly false in production |
 | `WEFT_LOG_LEVEL` | `INFO` | Standard uppercase process logging level |
+| `WEFT_MATCHING_DATABASE_URL` | unset | Async PostgreSQL URL for engine-owned `weft_engine` writes |
+| `WEFT_CONSOLE_DATABASE_URL` | unset | Separate read-only PostgreSQL credential for Console-owned `public` matching inputs |
+| `WEFT_MATCHING_SERVICE_TOKENS` | `{}` | JSON map from service token to allowed organization UUID strings |
+| `WEFT_OPENAI_API_KEY` | unset | OpenAI credential used by the dedicated worker |
+| `WEFT_MATCHING_MAX_SPEND_USD` | `0` | Per-run provider spend ceiling; the worker refuses calls when unset |
+| `WEFT_MATCHING_INPUT_COST_PER_MILLION_USD` | `0` | Configured evaluation model input rate |
+| `WEFT_MATCHING_OUTPUT_COST_PER_MILLION_USD` | `0` | Configured evaluation model output rate |
+| `WEFT_MATCHING_EMBEDDING_COST_PER_MILLION_USD` | `0` | Configured embedding model input rate |
 
-Settings read `.env` from the working directory; environment variables override it. Extra dotenv keys are ignored to allow deployment-specific values. Production should inject configuration, set `WEFT_ENVIRONMENT=production` and `WEFT_DOCS_ENABLED=false`, and run behind the deployment's network/TLS boundary. No AI or database credentials are needed yet. Uvicorn controls its own access/error logs independently; the application logging setting configures application loggers. Never log profile or provider payloads.
+Settings read `.env` from the working directory; environment variables override it. Extra dotenv keys are ignored to allow deployment-specific values. Production should inject configuration, set `WEFT_ENVIRONMENT=production` and `WEFT_DOCS_ENABLED=false`, and run behind the deployment's network/TLS boundary. Configure service-token scopes, separate read-only Console and restricted engine runtime roles, worker-only provider credentials, current model prices, and an approved spend ceiling. The worker refuses provider calls when prices or spend limits are missing. Uvicorn controls its own access/error logs independently; the application logging setting configures application loggers. Never log profile or provider payloads.
 
-`GET /health` is public liveness, not readiness. Swagger is at `/docs`; OpenAPI is at `/openapi.json`. ReDoc is disabled. There is no CORS middleware: browser access to future protected operations needs an explicit architecture decision rather than a wildcard default.
+Apply reviewed migrations explicitly with `WEFT_MATCHING_DATABASE_URL=... poetry run alembic upgrade head`; this URL must use a dedicated migration role. Start the API with `make start` and the separate worker with `make worker`; never run the worker in the API process. Provision Console table grants only for `events`, `event_guests`, `event_guest_profile_versions`, and `event_guest_match_blocks`. Give the runtime role access only to `weft_engine`; the migration role alone creates that schema. Deployment values and provider spend approval are not repository defaults.
+
+`GET /health` is public liveness, not readiness. Swagger is at `/docs`; OpenAPI is at `/openapi.json`. ReDoc is disabled. The browser continues through the Console authorization boundary; matching routes are service-token operations.
 
 ## FastAPI conventions
 
 Read [architecture](../ARCHITECTURE.md) before introducing a domain or boundary. Keep validation schemas, routes, services, domain configuration, models, and dependencies local to their domain. Prefer async dependencies for nonblocking validation; blocking libraries need threadpool/synchronous adapters. Keep heavy work out of request processes. Add SQLAlchemy/Alembic or a worker only when implementing an agreed durable capability.
 
-Tests use HTTPX's async ASGI transport and injected settings. The current app has no lifespan resources; when adding them, tests must enter lifespan explicitly to verify startup/cleanup. Do not use mocks to claim live provider matching acceptance.
+Tests use HTTPX's async ASGI transport and injected settings. Database pools are attached only when configured and closed through lifespan; database integration checks must enter lifespan and use explicitly disposable resources. Do not use mocks to claim live provider matching acceptance.
 
 ## Current bootstrap limit
 
-The setup environment could not resolve `pypi.org`, so dependency installation and generated-lock verification remain pending. See [verification](VERIFICATION.md) for actual evidence and [debt](exec-plans/tech-debt-tracker.md) for the concrete recovery command. This limit does not authorize adding fake feature responses or disabling required checks.
+Python 3.14 and Poetry are pinned by the repository and the generated lockfile is committed with dependency metadata. See [verification](VERIFICATION.md) for current unit evidence and F06 integration/quality acceptance prerequisites.

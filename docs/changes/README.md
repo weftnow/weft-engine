@@ -1,6 +1,6 @@
 # Change specifications
 
-No feature specifications or implementation plans are created for this foundation. [Product](../product.md) records future requirements; this directory is available for later authorized decisions.
+F06 matching is implemented with external and quality acceptance pending. [The active plan](../exec-plans/active/2026-10-19-f06-live-ai-matching.md) tracks remaining evidence. [Full matching support for linked duplicate groups](2026-10-19-linked-duplicate-matching.md) is a Draft follow-up with an explicit temporary F06 hold. [Product](../product.md) records the delivery boundary.
 
 Use a specification when a future change has consequential unresolved behavior, ownership, compatibility, or trust-boundary decisions. Save `YYYY-MM-DD-short-name.md` here with status, problem, confirmed requirements, proposals/open decisions, observable behavior, compatibility/non-goals, acceptance scenarios, and a link to its execution plan when one exists.
 

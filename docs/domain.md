@@ -16,7 +16,7 @@ LinkedIn content may be `available`, `url_only`, or `missing`; a URL alone provi
 
 ## Ownership
 
-The engine's future matching capability owns saved run inputs, AI attempts, structured-result validation, automatic selection, run status, and provenance. Automatic-update processing will need durable deduplication/recovery and result delivery. The authoritative match lifecycle owns automatic pair creation, stable introduction IDs, acceptance, attempts, Wefter assignments, cancellation, and meeting outcomes.
+The matching domain owns saved run snapshots, provider attempts and metadata, embeddings/evaluation cache, structured-result and evidence validation, capacity selection, run status, and provenance. F06 persists those records in the `weft_engine` schema and reads Console-owned event/profile/restriction records through a read-only adapter. The caller supplies explicit lifecycle context because the Console does not yet own introduction, decision, or completed-pair records. Automatic-update processing will need durable change consumption and delivery under F07. The authoritative match lifecycle owns automatic pair creation, stable introduction IDs, acceptance, attempts, Wefter assignments, cancellation, and meeting outcomes under F08.
 
 Do not implement acceptance, booking, or UI behavior in matching merely because a result mentions a pair. Sponsor/VIP attendee classification does not grant product staff access. Networking staff/Wefters are operational actors, separate from attendee type.
 

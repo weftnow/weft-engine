@@ -4,7 +4,7 @@ Weft Engine is the backend for automatic one-to-one networking matches at events
 
 ## Current delivery
 
-A runnable FastAPI foundation, typed configuration, health endpoint, tests, verification tooling, and engineering harness. F06, F07, and F08 are the first intended features, but none is implemented. No feature execution plans are created at this stage.
+A runnable FastAPI service with an F06 matching engine implementation, typed configuration, health endpoint, tests, verification tooling, and engineering harness. F06 remains active pending isolated PostgreSQL migration/worker acceptance, live-provider and labeled-quality benchmarks, and deployment-specific budget and credential setup. [The active F06 plan](exec-plans/active/2026-10-19-f06-live-ai-matching.md) records implementation evidence and outstanding gates. F07 and F08 remain deferred.
 
 ## Confirmed rules for future features
 
@@ -34,9 +34,9 @@ No UI redesign, attendee questionnaire/app, automatic invitations or communicati
 
 ## Open decisions before feature implementation
 
-- AI provider/model, access credentials, spend limits, supported event sizes, and quality evaluation criteria.
-- Durable storage, worker execution/transport, deployment environment, retry/coalescing policy, and failure recovery.
-- Authenticated service contracts, authorization and event scoping, change schema/versions, result delivery, and authoritative pair-write ownership.
+- Deployment-specific PostgreSQL role provisioning, OpenAI credentials, current model prices, and an approved per-run spend ceiling.
+- Live 300-guest performance/cost evidence and expert-reviewed precision, candidate-recall, coverage, privacy, and eligibility results.
+- Authoritative lifecycle context and freshness ownership for future F07/F08 triggers and pair creation; F06 currently requires callers to supply complete lifecycle context.
 - How current availability affects recalculation, introduction limits, and explicit cancellation/replacement integration.
 
 These decisions are not silently defaulted by the scaffold. See [architecture](../ARCHITECTURE.md) and [domain](domain.md) for boundaries.

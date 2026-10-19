@@ -1,6 +1,6 @@
 # Weft Engine
 
-FastAPI service for Weft matching and related backend operations. The current delivery is a runnable foundation; F06, F07, and F08 remain future scope. Do not implement them or create feature plans unless requested.
+FastAPI service for Weft matching and related backend operations. F06 engine matching is implemented; its external database, live-provider, and quality acceptance gates remain active-plan work. F07 and F08 remain future scope. Do not implement them or create competing plans unless requested.
 
 ## Documentation map
 

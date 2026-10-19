@@ -1,6 +1,6 @@
 # Execution plans
 
-Planning is deferred for the current foundation. The active and completed directories are intentionally empty. This document defines the workflow for future requests; it is not an execution plan or authorization to begin F06–F08.
+The foundation is delivered and [F06 implementation](exec-plans/active/2026-10-19-f06-live-ai-matching.md) is active, with external database/provider and expert-quality acceptance pending. F07 and F08 remain deferred. This document defines the plan workflow and does not authorize unrelated feature implementation or external operations by itself.
 
 For future nontrivial, risky, cross-boundary, or multi-session work, inspect [active plans](exec-plans/active/) and resume relevant work rather than creating competing plans. Small clear changes may proceed with a conversational plan. Explicit user instructions about deferring planning take precedence.
 

@@ -9,9 +9,11 @@
 | [Domain](domain.md) | Identity, capability ownership, privacy, trust boundaries |
 | [Engineering](engineering.md) | Runtime, configuration, dependencies, FastAPI conventions |
 | [Design](design/design.md) | API presentation and no-UI boundary |
+| [F06 service API](matching-api.md) | Authenticated run, status, result, and camelCase wire examples |
+| [F06 quality evaluation](matching-quality.md) | Reviewed benchmark inputs, release gates, and evidence limits |
 | [Plans](PLANS.md) | Thresholds, template, progress, acceptance, archive policy |
 | [Change specifications](changes/README.md) | Recording unresolved behavior before implementation |
-| [Active plans](exec-plans/active/) | Empty until planning is requested |
+| [Active plans](exec-plans/active/) | [F06 live AI matching](exec-plans/active/2026-10-19-f06-live-ai-matching.md), implementation active; acceptance pending |
 | [Completed plans](exec-plans/completed/) | Verified historical work; currently empty |
 | [Debt tracker](exec-plans/tech-debt-tracker.md) | Concrete nonblocking gaps, not the product backlog |
 | [Verification](VERIFICATION.md) | Check commands, change matrix, evidence limits |

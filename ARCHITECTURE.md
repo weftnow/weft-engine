@@ -12,13 +12,20 @@ src/
   health/
     router.py          GET /health
     schemas.py         public health response
-tests/                 runtime and configuration checks
+  matching/
+    router.py          authenticated versioned matching API
+    console.py         read-only Console PostgreSQL adapter
+    models.py          engine-owned weft_engine records
+    worker.py          leased worker and live provider pipeline
+    selection.py       evidence gates and CP-SAT selection
+tests/                 runtime, contracts, selection, and configuration checks
+migrations/            explicit Alembic migrations limited to weft_engine
 scripts/               dependency-light documentation checker and fixtures
 skills/                readable repository procedures
 docs/                  canonical references and planning workflow
 ```
 
-`create_app` reads settings on invocation, configures logging, constructs FastAPI, and includes the health router. Importing modules does not start network clients or load credentials. Tests inject settings and isolate environment variables and dotenv files. Development exposes OpenAPI and Swagger; production configuration requires documentation to be disabled explicitly. There is no database, worker, AI client, authentication integration, CORS policy, or matching API yet.
+`create_app` reads settings on invocation, configures logging, constructs FastAPI, and composes health and matching routers. Importing modules does not connect to databases or load credentials. Database pools are created only when URLs are configured and are closed through lifespan. Development exposes OpenAPI and Swagger; production configuration requires documentation to be disabled explicitly. Matching uses separate engine and read-only Console PostgreSQL credentials. Protected routes use configured service tokens with explicit organization grants; the Console remains the browser authorization boundary.
 
 `GET /health` is public process liveness. It does not assert provider, storage, worker, or integration readiness. Logs use the standard library and omit request/profile bodies. Do not infer feature availability from a successful health check.
 
@@ -32,14 +39,22 @@ Use explicit module imports across domains. Dependencies may compose authenticat
 
 Async routes and dependencies must use nonblocking I/O. Wrap unavoidable synchronous integrations in threadpool adapters or synchronous routes. CPU-heavy matching and durable recalculations need separate worker processes and persisted jobs; request-local BackgroundTasks cannot provide durable execution. Initialize and close future shared clients/pools through lifespan. Start async HTTP tests from the foundation.
 
-## Future capability boundaries — not implemented
+## F06 matching implementation
 
-F06 will belong to a matching domain: immutable run inputs, live provider invocation, structured-result validation, automatic pair selection, and provenance. F07 will own durable change consumption, deduplication, coalescing, retry/recovery, status, and result delivery. Reuse domains when these responsibilities remain cohesive; do not precreate packages from this description.
+F06 owns immutable run snapshots, PostgreSQL leased jobs, provider attempts, cached embeddings/evaluations, recommendation records, and slot grants. Alembic migrations create only `weft_engine`; Console tables remain in their existing schema and are queried through explicit SQL projections. `poetry run python -m src.matching.worker` starts a separate worker. Matching outputs remain recommendations, never authoritative introductions. The worker checks Console snapshot freshness before publication, holds linked duplicate identities, verifies evidence quotations against source fields, and filters organizer-only evidence from result responses.
+
+Runtime database roles must have Console `SELECT` access only to required event/profile/restriction tables and `SELECT`/`INSERT`/`UPDATE` access to `weft_engine`. The migration credential alone creates or changes the engine schema. The service does not migrate at startup. Database URLs target the Console PostgreSQL database while preserving existing tables outside `weft_engine`.
+
+Lifecycle context is supplied by the authenticated service caller and cannot be refreshed from Console-owned records that do not exist. F07/F08 must define and supply authoritative lifecycle freshness and recheck before introduction creation.
+
+## Future capability boundaries
+
+F06 matching is implemented in the matching domain. F07 will own durable change consumption, deduplication, coalescing, retry/recovery, status, and result delivery. Reuse domains when these responsibilities remain cohesive; do not precreate packages from this description.
 
 F08 consumes valid selected pairs to create authoritative introduction records and expose match-list data in the product. The engine supplies versioned, traceable results. Creating authoritative matches, guest acceptance, Wefter assignments, meeting outcomes, and UI remain separate product operations. Final service contracts must resolve ownership before implementing cross-service writes.
 
 The engine should own run snapshots, attempts, provider metadata, and result-delivery state. Event/guest identities, participation, profiles, restrictions, accepted/active/completed introductions remain authoritative upstream. Do not share mutable ORM models or take ownership of those records implicitly. See [domain](docs/domain.md) for identifiers and trust boundaries.
 
-Persistence selection is deferred. The intended default for engine-owned relational storage is PostgreSQL with SQLAlchemy 2 async and Alembic, added when durable features are implemented. Migrations must be reviewed and run explicitly, never at application startup. Worker transport, deployment topology, authentication, and result delivery are unresolved; a Redis broker or provider SDK is not required by this foundation.
+F07 change ingestion and result delivery remain future work. Do not add them to the F06 worker queue.
 
 Durable architecture decisions belong in this file and the owning reference. Use the [planning policy](docs/PLANS.md) for future implementation work; historical plans never override current product requirements.
