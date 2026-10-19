@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import uuid
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.config import Settings
+from src.matching import changes
 from src.matching.console import ConsoleAdapter
 from src.matching.models import Attempt, Embedding, EvaluationCache, Recommendation, Run, SlotGrant
 from src.matching.schemas import EvidenceVerification, PairEvaluation, PairEvaluationBatch
@@ -29,6 +31,8 @@ from src.matching.selection import (
     validate_evaluation,
 )
 from src.matching.storage import fingerprint
+
+logger = logging.getLogger(__name__)
 
 LEASE_SECONDS = 90
 MAX_PAIRS_PER_REQUEST = 4
@@ -135,7 +139,7 @@ class MatchingWorker:
                 text("""
                 UPDATE weft_engine.matching_runs SET heartbeat_at=now(),
                   lease_expires_at=now() + (:lease * interval '1 second'),
-                  progress=jsonb_build_object('stage',:stage)
+                  progress=jsonb_build_object('stage',CAST(:stage AS text))
                 WHERE id=:run_id AND status='running' AND lease_owner=:owner
                 RETURNING id
             """),
@@ -306,7 +310,9 @@ class MatchingWorker:
                         status="running",
                         model=self.settings.matching_embedding_model,
                         prompt_version=self.settings.matching_policy_version,
-                        input_fingerprint=fingerprint({key: fingerprints[key] for key, _ in batch}),
+                        input_fingerprint=fingerprint(
+                            [[*key, fingerprints[key]] for key, _ in batch]
+                        ),
                         input_tokens=0,
                         output_tokens=0,
                     )
@@ -745,6 +751,8 @@ class MatchingWorker:
         blocked = {tuple(sorted(pair)) for pair in console_snapshot["blocked_pairs"]}
         existing = await self._recommendations(run)
         prior_pairs.update((str(item.guest_low_id), str(item.guest_high_id)) for item in existing)
+        # A revoked pair frees capacity but is never recommended again.
+        prior_pairs.update(await self._revoked_pairs(run))
         eligible = [
             item
             for item in all_guests.values()
@@ -917,14 +925,23 @@ class MatchingWorker:
                     )
                 )
             )
+            # Revoke anything that became ineligible before counting capacity, so a freed slot
+            # can be used by this run's pairs and the revocation reaches the feed first.
+            await changes.apply_revocations(
+                session,
+                [item for item in committed if item.revoked_at is None],
+                refreshed,
+                run.id,
+            )
             committed_counts: dict[str, int] = {key: 0 for key in all_guests}
             committed_pairs: set[tuple[str, str]] = set()
             for recommendation in committed:
                 low = str(recommendation.guest_low_id)
                 high = str(recommendation.guest_high_id)
-                committed_counts[low] += 1
-                committed_counts[high] += 1
                 committed_pairs.add((low, high))
+                if recommendation.revoked_at is None:
+                    committed_counts[low] += 1
+                    committed_counts[high] += 1
             committed_grants = list(
                 await session.scalars(
                     select(SlotGrant).where(
@@ -960,9 +977,12 @@ class MatchingWorker:
                 raise WorkerFailure(
                     "selection_solver_failed", "serialized capacity selection did not complete"
                 )
-            session.add_all(
+            issued = [
                 recommendations[(pair.guest_low_id, pair.guest_high_id)] for pair in final_selection
-            )
+            ]
+            session.add_all(issued)
+            await session.flush()
+            await changes.append_issued(session, issued)
             final_degrees: dict[str, int] = {guest_id: 0 for guest_id in all_guests}
             for pair in final_selection:
                 final_degrees[pair.guest_low_id] += 1
@@ -985,6 +1005,7 @@ class MatchingWorker:
             current.status = "finished"
             current.progress = {"stage": "finished", "selected_pairs": len(final_selection)}
             current.provenance = {
+                **current.provenance,
                 "embedding_model": self.settings.matching_embedding_model,
                 "evaluation_model": self.settings.matching_evaluation_model,
                 "prompt_version": self.settings.matching_prompt_version,
@@ -1013,16 +1034,48 @@ class MatchingWorker:
                 select(Recommendation).where(
                     Recommendation.organization_id == run.organization_id,
                     Recommendation.event_id == run.event_id,
+                    Recommendation.revoked_at.is_(None),
                 )
             )
             return list(rows)
+
+    async def _revoked_pairs(self, run: Run) -> set[tuple[str, str]]:
+        async with self.sessions() as session:
+            rows = await session.execute(
+                select(Recommendation.guest_low_id, Recommendation.guest_high_id).where(
+                    Recommendation.organization_id == run.organization_id,
+                    Recommendation.event_id == run.event_id,
+                    Recommendation.revoked_at.is_not(None),
+                )
+            )
+            return {(str(low), str(high)) for low, high in rows}
+
+    async def automatic_cycle(self) -> bool:
+        """Read Console changes, close finished batches, and schedule due runs.
+
+        Returns True when any step did work. Failures are logged without profile content and
+        retried on the next cycle; they never stop the worker.
+        """
+        try:
+            received = await changes.ingest(
+                self.sessions, self.console, self.settings.matching_change_poll_limit
+            )
+            settled = await changes.settle(self.sessions, self.settings)
+            created = await changes.schedule(self.sessions, self.console, self.settings)
+        except Exception as error:
+            logger.warning("automatic matching cycle failed: %s", type(error).__name__)
+            return False
+        return bool(received or settled or created)
 
 
 async def serve_worker(worker: MatchingWorker, idle_sleep_seconds: float = 1.0) -> None:
     """Run indefinitely; deployment supervision provides process restart."""
     while True:
+        busy = False
+        if worker.settings.matching_automatic_enabled:
+            busy = await worker.automatic_cycle()
         claimed = await worker.process_one()
-        if not claimed:
+        if not (claimed or busy):
             await asyncio.sleep(idle_sleep_seconds)
 
 

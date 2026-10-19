@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     Float,
@@ -43,7 +44,9 @@ class Run(Base):
             "status IN ('waiting','running','failed','finished','invalid_result')",
             name="matching_runs_status_valid",
         ),
+        CheckConstraint("trigger IN ('api','change')", name="matching_runs_trigger_valid"),
         Index("matching_runs_queue_idx", "status", "created_at"),
+        Index("matching_runs_event_idx", "organization_id", "event_id", "created_at"),
         {"schema": Base.metadata_schema},
     )
 
@@ -69,6 +72,8 @@ class Run(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False, default="api")
+    change_batch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
 
 class Attempt(Base):
@@ -126,6 +131,15 @@ class Recommendation(Base):
         ),
         CheckConstraint("guest_low_id < guest_high_id", name="recommendations_pair_order"),
         CheckConstraint("pair_score BETWEEN 70 AND 100", name="recommendations_score_valid"),
+        CheckConstraint(
+            "revocation_reason IS NULL OR revocation_reason IN "
+            "('guest_excluded','pair_blocked','identity_resolution_required','guest_missing')",
+            name="recommendations_revocation_reason_valid",
+        ),
+        CheckConstraint(
+            "(revoked_at IS NULL) = (revocation_reason IS NULL)",
+            name="recommendations_revocation_consistent",
+        ),
         Index("recommendations_event_idx", "organization_id", "event_id", "created_at"),
         {"schema": Base.metadata_schema},
     )
@@ -147,6 +161,9 @@ class Recommendation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revocation_reason: Mapped[str | None] = mapped_column(String(48))
+    revoked_by_run_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
 
 class SlotGrant(Base):
@@ -196,6 +213,74 @@ class EvaluationCache(Base):
     policy_version: Mapped[str] = mapped_column(String(100), nullable=False)
     live_attempt_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     evaluation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ChangeBatch(Base):
+    """One coalesced set of Console changes answered by one run per attempt."""
+
+    __tablename__ = "matching_change_batches"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('scheduled','completed','abandoned')", name="matching_change_batches_state"
+        ),
+        Index("matching_change_batches_event_idx", "organization_id", "event_id", "state"),
+        {"schema": Base.metadata_schema},
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    event_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="scheduled")
+    last_run_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    abandon_reason: Mapped[str | None] = mapped_column(String(80))
+
+
+class ChangeReceipt(Base):
+    """Idempotent engine-side record that a Console change row was read."""
+
+    __tablename__ = "matching_change_receipts"
+    __table_args__ = (
+        Index("matching_change_receipts_event_idx", "event_id", "batch_id", "change_created_at"),
+        {"schema": Base.metadata_schema},
+    )
+
+    change_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    event_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    guest_ids: Mapped[list[UUID]] = mapped_column(ARRAY(PGUUID(as_uuid=True)), nullable=False)
+    change_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    batch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+
+class FeedEntry(Base):
+    """Pull-feed item; seq order within an event matches commit order (written under the lock)."""
+
+    __tablename__ = "matching_feed_entries"
+    __table_args__ = (
+        UniqueConstraint("recommendation_id", "kind", name="matching_feed_entries_once"),
+        CheckConstraint("kind IN ('issued','revoked')", name="matching_feed_entries_kind"),
+        Index("matching_feed_entries_event_idx", "organization_id", "event_id", "seq"),
+        {"schema": Base.metadata_schema},
+    )
+
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    event_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    recommendation_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    run_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

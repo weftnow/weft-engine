@@ -33,10 +33,15 @@ Run `make dev` for reload on `127.0.0.1:8000`, or `make start` for Uvicorn witho
 | `WEFT_MATCHING_INPUT_COST_PER_MILLION_USD` | `0` | Configured evaluation model input rate |
 | `WEFT_MATCHING_OUTPUT_COST_PER_MILLION_USD` | `0` | Configured evaluation model output rate |
 | `WEFT_MATCHING_EMBEDDING_COST_PER_MILLION_USD` | `0` | Configured embedding model input rate |
+| `WEFT_MATCHING_AUTOMATIC_ENABLED` | `false` | F07 automatic processing in the worker; set the same value on the API process so status reports it correctly |
+| `WEFT_MATCHING_CHANGE_QUIET_SECONDS` | `30` | Quiet period after the newest change before a run starts |
+| `WEFT_MATCHING_CHANGE_MAX_WAIT_SECONDS` | `300` | Longest the oldest pending change waits while changes keep arriving |
+| `WEFT_MATCHING_CHANGE_RETRY_LIMIT` | `3` | Retries after a transient failure (backoff 1, 5, 15 minutes) |
+| `WEFT_MATCHING_CHANGE_POLL_LIMIT` | `500` | Console change rows read per polling cycle |
 
 Settings read `.env` from the working directory; environment variables override it. Extra dotenv keys are ignored to allow deployment-specific values. Production should inject configuration, set `WEFT_ENVIRONMENT=production` and `WEFT_DOCS_ENABLED=false`, and run behind the deployment's network/TLS boundary. Configure service-token scopes, separate read-only Console and restricted engine runtime roles, worker-only provider credentials, current model prices, and an approved spend ceiling. The worker refuses provider calls when prices or spend limits are missing. Uvicorn controls its own access/error logs independently; the application logging setting configures application loggers. Never log profile or provider payloads.
 
-Apply reviewed migrations explicitly with `WEFT_MATCHING_DATABASE_URL=... poetry run alembic upgrade head`; this URL must use a dedicated migration role. Start the API with `make start` and the separate worker with `make worker`; never run the worker in the API process. Provision Console table grants only for `events`, `event_guests`, `event_guest_profile_versions`, and `event_guest_match_blocks`. Give the runtime role access only to `weft_engine`; the migration role alone creates that schema. Deployment values and provider spend approval are not repository defaults.
+Apply reviewed migrations explicitly with `WEFT_MATCHING_DATABASE_URL=... poetry run alembic upgrade head`; this URL must use a dedicated migration role. Start the API with `make start` and the separate worker with `make worker`; never run the worker in the API process. Provision Console table grants only for `events`, `event_guests`, `event_guest_profile_versions`, and `event_guest_match_blocks`. For F07 also grant the engine's Console role `SELECT` on `public.event_matching_changes` and a column-level `UPDATE (processed_at)` (`GRANT UPDATE (processed_at) ON public.event_matching_changes TO <role>`); operators apply these grants because no migration creates roles. Give the runtime role access only to `weft_engine`; the migration role alone creates that schema. Deployment values and provider spend approval are not repository defaults.
 
 `GET /health` is public liveness, not readiness. Swagger is at `/docs`; OpenAPI is at `/openapi.json`. ReDoc is disabled. The browser continues through the Console authorization boundary; matching routes are service-token operations.
 

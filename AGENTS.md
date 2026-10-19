@@ -1,6 +1,6 @@
 # Weft Engine
 
-FastAPI service for Weft matching and related backend operations. F06 engine matching is implemented; its external database, live-provider, and quality acceptance gates remain active-plan work. F07 and F08 remain future scope. Do not implement them or create competing plans unless requested.
+FastAPI service for Weft matching and related backend operations. F06 engine matching is implemented; its external database, live-provider, and quality acceptance gates remain active-plan work. F07 automatic updates are implemented behind `WEFT_MATCHING_AUTOMATIC_ENABLED` (off by default; [active plan](docs/exec-plans/active/2026-10-19-f07-automatic-matching-updates.md) holds the open acceptance gates). F08 remains future scope; do not implement it or create competing plans unless requested.
 
 ## Documentation map
 

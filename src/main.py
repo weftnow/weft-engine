@@ -11,6 +11,7 @@ from src.config import Settings
 from src.health.router import router as health_router
 from src.matching.console import ConsoleAdapter
 from src.matching.router import router as matching_router
+from src.matching.status_router import router as matching_status_router
 from src.matching.storage import session_factory
 
 VERSION = "0.1.0"
@@ -41,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.include_router(health_router)
     app.include_router(matching_router)
+    app.include_router(matching_status_router)
     app.state.settings = config
     if config.matching_database_url:
         app.state.matching_sessions = session_factory(

@@ -4,7 +4,7 @@ Weft Engine is the backend for automatic one-to-one networking matches at events
 
 ## Current delivery
 
-A runnable FastAPI service with an F06 matching engine implementation, typed configuration, health endpoint, tests, verification tooling, and engineering harness. F06 remains active pending isolated PostgreSQL migration/worker acceptance, live-provider and labeled-quality benchmarks, and deployment-specific budget and credential setup. [The active F06 plan](exec-plans/active/2026-10-19-f06-live-ai-matching.md) records implementation evidence and outstanding gates. F07 and F08 remain deferred.
+A runnable FastAPI service with an F06 matching engine implementation, typed configuration, health endpoint, tests, verification tooling, and engineering harness. F06 remains active pending isolated PostgreSQL migration/worker acceptance, live-provider and labeled-quality benchmarks, and deployment-specific budget and credential setup. [The active F06 plan](exec-plans/active/2026-10-19-f06-live-ai-matching.md) records implementation evidence and outstanding gates. F07 is implemented behind a default-off switch; [its active plan](exec-plans/active/2026-10-19-f07-automatic-matching-updates.md) records the remaining acceptance gates. F08 remains deferred.
 
 ## Confirmed rules for future features
 
@@ -18,9 +18,11 @@ Reject malformed output, self-matches, duplicate unordered pairs, unknown identi
 
 ### F07 — Automatic matching updates
 
-Completed imports and relevant saved profile, exclusion, restoration, and restriction changes trigger recalculation automatically. Use current profiles and event-local inclusion/identity rules; completeness is not a ready status. Keep explicit links to authoritative organization/event/guest IDs if internal identifiers differ. Never identify people by name, list position, or similar-looking IDs.
+Completed imports and relevant saved profile, exclusion, restoration, restriction, attendee-correction, and identity-link changes trigger recalculation automatically. Use current profiles and event-local inclusion/identity rules; completeness is not a ready status. Keep explicit links to authoritative organization/event/guest IDs if internal identifiers differ. Never identify people by name, list position, or similar-looking IDs.
 
 Expose waiting, running, failed, finished, and invalid-result states with result source. Repeated notifications, retries, and repeated result delivery must not duplicate jobs or pair records. Coalesce rapid related changes where appropriate. Reject unknown IDs and outdated profiles automatically. Ordinary recalculation preserves accepted/active introductions; withdrawals and invalid identity require explicit cancellation handling. Availability-triggered recalculation remains an open question.
+
+**Implemented behavior (default off, `WEFT_MATCHING_AUTOMATIC_ENABLED`).** The engine reads the Console's saved-change log; there is no start button and no approval step. Changes for one event wait for a 30 second quiet period (at most 300 seconds) and then produce one run, with never more than one waiting or running run per event. Transient failures retry after 1, 5 and 15 minutes (three retries); configuration and budget failures do not retry, and a stale snapshot re-runs immediately within the same cap. Existing recommendations are revoked, with a recorded reason and freed capacity, only when a guest is excluded or missing, a do-not-match block is added, or an identity hold applies; profile edits keep them, and a revoked pair is never recommended again. Results leave the engine through a pull feed of `issued` and `revoked` recommendations that F08 will consume. Automatic runs currently use an empty, explicitly stated lifecycle (no recorded decisions, protected pairs or completed pairs) because the Console stores none yet.
 
 ### F08 — Automatic pair creation and match list
 
@@ -36,7 +38,7 @@ No UI redesign, attendee questionnaire/app, automatic invitations or communicati
 
 - Deployment-specific PostgreSQL role provisioning, OpenAI credentials, current model prices, and an approved per-run spend ceiling.
 - Live 300-guest performance/cost evidence and expert-reviewed precision, candidate-recall, coverage, privacy, and eligibility results.
-- Authoritative lifecycle context and freshness ownership for future F07/F08 triggers and pair creation; F06 currently requires callers to supply complete lifecycle context.
+- Authoritative lifecycle context and freshness ownership for F08 pair creation; F06 requires callers to supply complete lifecycle context and F07 automatic runs supply an empty one until the Console records lifecycle data.
 - How current availability affects recalculation, introduction limits, and explicit cancellation/replacement integration.
 
 These decisions are not silently defaulted by the scaffold. See [architecture](../ARCHITECTURE.md) and [domain](domain.md) for boundaries.
