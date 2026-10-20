@@ -138,18 +138,35 @@ Current implementation evidence:
 | --- | --- |
 | Python / Poetry baseline | Python 3.14.6, Poetry 2.4.1; generated `poetry.lock` with Poetry and installed dependencies via Poetry |
 | `poetry check --lock --strict` | Passed |
-| `make verify` | Passed on Python 3.14.6: docs checker, Ruff lint/format, strict mypy, and pytest (33 tests; 38% total branch-aware coverage, worker/database integration not exercised) |
+| `make verify` | Passed on Python 3.14.6 after database fixes: docs checker, Ruff lint/format, strict mypy (21 source files), and pytest (33 passed, 7 opt-in database tests skipped; 38% default-suite total branch-aware coverage). The database suite passed separately below. |
 | Alembic offline SQL generation | Passed; verified `weft_engine` schema creation precedes its Alembic version table; no database connection was made |
 | Local Uvicorn smoke | Passed on loopback with injected test settings and no database/provider credentials: `/health` returned the expected payload and `/openapi.json` returned 200; process stopped |
 | Console checkout | Inspected read-only; no files changed |
-| PostgreSQL migration / API-worker integration | Not run: no explicitly isolated disposable PostgreSQL database was supplied |
+| PostgreSQL migration state | Independently read `weft_engine.alembic_version` = `0002_f07` and confirmed the F06 tables on `weft_console_test`, project `aged-recipe-59178735`, branch `dev` (`br-proud-base-ayz7tqp8`). This checkout contains only `0001_f06`; no migration or schema reset was run. Migration-isolation acceptance remains unexecuted. |
+| PostgreSQL API-worker integration | Passed all 7 opt-in cases on the explicitly user-authorized Neon target in 135.32 seconds, using transaction-isolated synthetic fixtures and a synthetic provider transport; all fixtures rolled back. Covered API submission/results, repeated requests and one-time slot grants, recalculation preserving prior recommendations, sparse/version-zero profiles, excluded/linked guests, blocked pairs, authorization/scope, stale snapshots, missing spend budget, fabricated evidence, provider failure, and lease-owner fencing. |
+| Actual application database pools/lifespan | Passed a separate read-only ASGI smoke using the normal factory and real Neon-backed pools: health/docs/OpenAPI 200, scoped unknown event 404, engine database/revision queries succeeded, and pools disposed after lifespan. |
 | Live provider / 300-guest benchmark | Not run: no explicitly supplied OpenAI credential and approved spend budget |
 | Expert quality benchmark | Harness implemented; no 60-profile / 200-label reviewed dataset supplied, so precision, recall, coverage, and violation gates remain unmeasured |
 
-No live matching, database migration, or F06 acceptance has run. The generated quality-evaluation unit fixtures are test mechanics only, not acceptance evidence. No production operations, paid provider calls, or Console checkout changes were performed.
+Database/API/worker verification above has run. No live-provider matching or full F06 acceptance has run. The generated quality-evaluation fixtures and synthetic provider responses are test mechanics only, not quality acceptance evidence. Migration isolation, separate-process queue claiming/crash recovery, concurrent requests/publication, and deployment role grants remain unverified. No production operations, paid provider calls, schema changes, committed test data, or Console checkout changes were performed.
+
+Commands for this check:
+
+- `WEFT_INTEGRATION_DATABASE_URL_FILE=<private test URL file> WEFT_INTEGRATION_DATABASE_NAME=weft_console_test poetry run pytest tests/test_matching_postgres.py -x -q --tb=short` — initially exposed two worker defects, then passed all 7 cases after fixes. The URL was retrieved explicitly for this test database through the Neon connector, never inherited from ambient production settings; the private temporary file was removed after use.
+- `poetry check --lock --strict` — passed.
+- `make verify` — passed with the normal opt-in database skips described above.
+- The read-only ASGI smoke used `create_app`, its lifespan, real PostgreSQL pools, and injected test settings; it did not submit or mutate existing events.
+
+The worker fixes add an explicit text cast for the heartbeat's PostgreSQL JSON value and serialize embedding-attempt fingerprints as JSON-compatible records instead of tuple-keyed dictionaries. Both failures were reproduced against Neon before correction; the successful full worker pipeline now covers them in the opt-in suite. Provider/model identifiers used by the suite are `synthetic-integration-embedding` and `synthetic-integration-evaluation`, with policy `f06-policy-v1` and prompt `f06-rubric-v1`; they do not denote live calls.
+
+### Integration with main, 2026-10-19
+
+Fast-forwarded to `0b3d968` and restored the local F06 PostgreSQL suite and verification evidence. Preserved main's F07 implementation and shared heartbeat fix; resolved the embedding-attempt fingerprint overlap using the local JSON-compatible named records. `poetry check --lock --strict` and `make verify` passed on Python 3.14.6 / Poetry 2.4.1: documentation, Ruff lint/format, strict mypy (25 source files), and pytest (79 passed, 18 opt-in PostgreSQL skips; 43% total branch-aware coverage). No database or provider checks were rerun during integration; the acceptance gates above remain open. Next action remains the bounded integration and live-provider/quality checks described below.
 
 ## Decisions, follow-up, and handoff
 
+2026-10-19: Antonio explicitly authorized database/API/worker checks against `weft_console_test` on Neon's `dev` branch and rejected a local database. Use transaction-isolated synthetic fixtures with rollback; do not migrate, reset, or modify existing records. Read-only inspection found Alembic revision `0002_f07` and additional engine tables beyond this checkout's `0001_f06`; leave that external schema unchanged and keep F07/F08 outside this task. Live-provider acceptance still requires separately supplied credentials and approved spend.
+
 Full matching support for linked duplicate groups requires a later explicit design and implementation covering canonical profile selection, conflicting exclusions, combined restrictions, identity freshness, existing recommendations, and introduction disposition. Track this in the [Draft change specification](../../changes/2026-10-19-linked-duplicate-matching.md) and [follow-up tracker](../tech-debt-tracker.md). Keep the temporary hold until that work is completed; do not guess a canonical profile or silently propagate settings.
 
-Next action: run migration/API/worker recovery checks against an explicitly isolated disposable PostgreSQL fixture, then perform the expert-reviewed synthetic benchmark and approved 300-guest live run. Keep F06 active until those gates pass. Full linked duplicate-group matching remains deferred; preserve the temporary hold.
+Next action: supply an explicit OpenAI test credential, configured prices, and approved spend for live-provider checks; obtain the expert-reviewed synthetic benchmark dataset. Remaining database acceptance includes migration isolation, separate-process queue/crash recovery, concurrency, and restricted deployment roles; the current transaction-isolated suite deliberately does not claim those gates. Use Antonio's authorized Neon target for bounded synthetic checks, without migrating/resetting it or draining unrelated jobs. Keep F06 active until all acceptance gates pass. Full linked duplicate-group matching remains deferred; preserve the temporary hold.

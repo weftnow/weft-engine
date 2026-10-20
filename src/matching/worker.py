@@ -311,7 +311,14 @@ class MatchingWorker:
                         model=self.settings.matching_embedding_model,
                         prompt_version=self.settings.matching_policy_version,
                         input_fingerprint=fingerprint(
-                            [[*key, fingerprints[key]] for key, _ in batch]
+                            [
+                                {
+                                    "guest_id": key[0],
+                                    "channel": key[1],
+                                    "content_fingerprint": fingerprints[key],
+                                }
+                                for key, _ in batch
+                            ]
                         ),
                         input_tokens=0,
                         output_tokens=0,
