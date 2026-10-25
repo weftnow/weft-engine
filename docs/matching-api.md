@@ -29,7 +29,7 @@ Creation returns `202 Accepted` with `{ "runId": "…", "status": "waiting" }`. 
 
 Reason codes distinguish `identity_resolution_required`, `excluded`, `recipient_capacity`, `bounded_search`, and `insufficient_support`. These recommendation records are not authoritative introductions and do not represent guest acceptance or a physical meeting. The caller must provide authoritative lifecycle context; F06 cannot detect lifecycle changes the Console has not stored or supplied.
 
-The Console adapter reads `public.events`, `public.event_guests`, `public.event_guest_profile_versions`, and `public.event_guest_match_blocks`, and (F07) reads `public.event_matching_changes` and sets only its `processed_at`. It never reads contact details. Results omit evidence fields marked organizer-only; shareable reasons are generated from shareable evidence in a separate verification pass. Result items now include `revokedAt` and `revocationReason` (both `null` while active).
+The Console adapter reads `public.events`, `public.event_guests`, `public.event_guest_profile_versions`, and `public.event_guest_match_blocks`, and (F07) reads `public.event_matching_changes` and sets only its `processed_at`. It never reads contact details. The snapshot also carries the event's `language` (`en` | `es`, read from `public.events.language`, default `en`); it is part of the fingerprint, recorded in run provenance, and decides the language of `shareableReasons` (quotes stay verbatim, reason codes are never translated). Results omit evidence fields marked organizer-only; shareable reasons are generated from shareable evidence in a separate verification pass. Result items now include `revokedAt` and `revocationReason` (both `null` while active).
 
 ## F07 status and feed
 
