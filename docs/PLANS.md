@@ -1,6 +1,6 @@
 # Execution plans
 
-The foundation is delivered and [F06 implementation](exec-plans/active/2026-10-19-f06-live-ai-matching.md) is active, with external database/provider and expert-quality acceptance pending. [F07 automatic updates](exec-plans/active/2026-10-19-f07-automatic-matching-updates.md) is active, with isolated-database and end-to-end acceptance pending. F08 remains deferred. This document defines the plan workflow and does not authorize unrelated feature implementation or external operations by itself.
+The foundation is delivered and [F06 implementation](exec-plans/active/2026-10-19-f06-live-ai-matching.md) is active, with external database/provider and expert-quality acceptance pending. [F07 automatic updates](exec-plans/active/2026-10-19-f07-automatic-matching-updates.md) is active, with isolated-database and end-to-end acceptance pending. [Matching engine optimization](exec-plans/active/2026-10-24-matching-engine-optimization.md) is active, with isolated migration/worker, measured performance, and reviewed-quality acceptance pending. F08 remains deferred. This document defines the plan workflow and does not authorize unrelated feature implementation or external operations by itself.
 
 For future nontrivial, risky, cross-boundary, or multi-session work, inspect [active plans](exec-plans/active/) and resume relevant work rather than creating competing plans. Small clear changes may proceed with a conversational plan. Explicit user instructions about deferring planning take precedence.
 

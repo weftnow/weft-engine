@@ -13,7 +13,7 @@
 | [F06 quality evaluation](matching-quality.md) | Reviewed benchmark inputs, release gates, and evidence limits |
 | [Plans](PLANS.md) | Thresholds, template, progress, acceptance, archive policy |
 | [Change specifications](changes/README.md) | Recording unresolved behavior before implementation |
-| [Active plans](exec-plans/active/) | [F06 live AI matching](exec-plans/active/2026-10-19-f06-live-ai-matching.md) and [F07 automatic updates](exec-plans/active/2026-10-19-f07-automatic-matching-updates.md); implementation active, acceptance pending |
+| [Active plans](exec-plans/active/) | [F06 live AI matching](exec-plans/active/2026-10-19-f06-live-ai-matching.md), [F07 automatic updates](exec-plans/active/2026-10-19-f07-automatic-matching-updates.md), and [matching optimization](exec-plans/active/2026-10-24-matching-engine-optimization.md); acceptance gates remain pending |
 | [Completed plans](exec-plans/completed/) | Verified historical work; currently empty |
 | [Debt tracker](exec-plans/tech-debt-tracker.md) | Concrete nonblocking gaps, not the product backlog |
 | [Verification](VERIFICATION.md) | Check commands, change matrix, evidence limits |
