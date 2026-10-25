@@ -15,8 +15,9 @@ src/
   matching/
     router.py          authenticated versioned matching API
     console.py         read-only Console PostgreSQL adapter
-    models.py          engine-owned weft_engine records
-    worker.py          leased worker and live provider pipeline
+    models.py          engine-owned weft_engine records and caches
+    worker.py          leased worker, budget reservation, and provider pipeline
+    experiments.py     pure policies for disabled screening experiments
     selection.py       evidence gates and CP-SAT selection
     changes.py         F07 change ingestion, coalescing, retry, revocation, status and feed reads
     status_router.py   F07 per-event status and recommendation feed
@@ -44,6 +45,40 @@ Async routes and dependencies must use nonblocking I/O. Wrap unavoidable synchro
 ## F06 matching implementation
 
 F06 owns immutable run snapshots, PostgreSQL leased jobs, provider attempts, cached embeddings/evaluations, recommendation records, and slot grants. Alembic migrations create only `weft_engine`; Console tables remain in their existing schema and are queried through explicit SQL projections. `poetry run python -m src.matching.worker` starts a separate worker. Matching outputs remain recommendations, never authoritative introductions. The worker checks Console snapshot freshness before publication, holds linked duplicate identities, verifies evidence quotations against source fields, and filters organizer-only evidence from result responses.
+
+Provider scoring and selected-pair evidence verification run in bounded waves using independent database sessions; the default shared provider concurrency is four (configurable from one to eight). Every dispatched request has an attempt and a durable per-run cost reservation. Reservations are serialized under the run row lock; interrupted or unknown-billing requests retain their reserved amount. Confirmed token usage and cost are recorded separately from estimated spend. Successful embedding, evaluation, and evidence-verification results are cached with their existing model/input/privacy compatibility keys.
+
+The production worker uses `compact-judgment-v1` authoritative judgments for every candidate
+in the unchanged 20→40 blended retrieval pool. `compact.py` projects substantive profile facts,
+restrictions and privacy metadata, gives source passages exact references, deduplicates profiles
+within requests, and batches up to eight pairs (48,000-character soft payload ceiling; a single
+oversized pair remains intact). Both directional benefit claims must cite both guests for a
+qualifying judgment. Exact quotations are hydrated locally; missing information comes from
+saved missing-details facts and uncertainty is rendered from bounded codes. No LLM summary
+truncates the source profile. This changes the internal provider contract, not the result API.
+
+Only selected pairs receive longer shareable explanations, through the existing verifier.
+Privacy-filtered evidence indexes are rebuilt after filtering, and returned identities/indexes
+are validated. Unsupported explanations discard that pair and rerun capacity selection over
+already judged candidates; provider/budget failures still fail the run. Verified explanations
+can supply selected benefits; private-only benefits retain the concise judgment claim.
+No additional screening or full-evaluation pass runs before selection.
+
+Evaluation cache hashes include schema version, event, authoritative pair identities and
+matching-relevant content. Model/prompt/policy and organization scope remain database filters;
+exact compatible legacy evaluations remain reusable. Metadata-only revision changes do not
+invalidate new judgments, but current snapshot/lifecycle/eligibility checks still guard publication.
+Verification uses a separate versioned cache. No new migration is needed for these contracts.
+
+Retrieval preserves the prior score formula and tie ordering, precomputes lexical tokens/vector
+norms, and stores only the best 40 edges per attendee. This removes per-attendee all-edge scans
+and quadratic retained ranking storage; similarity computation still examines every pair.
+The 300-eligible-attendee production guard remains. Larger-event CPU/load acceptance is pending.
+
+The historical screening/search helpers and configuration are retained for compatibility but
+are not invoked by production processing, even when `WEFT_MATCHING_EXPERIMENTS_ENABLED` is true.
+Candidate reduction, new ranking formulas, alternate models and approximate retrieval are deferred
+by explicit user direction.
 
 Runtime database roles must have Console `SELECT` access only to required event/profile/restriction tables (plus, for F07, `SELECT` on `public.event_matching_changes` and a column-level `UPDATE (processed_at)`) and `SELECT`/`INSERT`/`UPDATE` access to `weft_engine`. The migration credential alone creates or changes the engine schema. The service does not migrate at startup. Database URLs target the Console PostgreSQL database while preserving existing tables outside `weft_engine`.
 

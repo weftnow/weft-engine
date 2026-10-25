@@ -71,6 +71,25 @@ class PairEvaluationBatch(BaseModel):
     pairs: list[PairEvaluation] = Field(min_length=1, max_length=4)
 
 
+class ScreeningPair(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    guest_a_id: UUID
+    guest_b_id: UUID
+    score_a: int = Field(ge=0, le=100)
+    score_b: int = Field(ge=0, le=100)
+    restriction_found: bool
+    uncertain: bool
+    source_fields_a: list[str]
+    source_fields_b: list[str]
+
+
+class ScreeningBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pairs: list[ScreeningPair] = Field(min_length=1, max_length=4)
+
+
 class EvidenceVerification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

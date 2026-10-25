@@ -42,16 +42,23 @@ class ConsoleAdapter:
             )
         return UUID(str(value)) if value else None
 
-    async def pending_changes(self, limit: int) -> list[ChangeRow]:
+    async def pending_changes(
+        self, limit: int, event_ids: set[UUID] | None = None
+    ) -> list[ChangeRow]:
+        event_filter = ""
+        parameters: dict[str, Any] = {"limit": limit}
+        if event_ids is not None:
+            event_filter = " AND event_id = ANY(:event_ids)"
+            parameters["event_ids"] = list(event_ids)
         async with self._engine.connect() as connection:
             rows = (
                 await connection.execute(
-                    text("""
+                    text(f"""
                 SELECT id, event_id, kind::text AS kind, guest_ids, created_at
-                FROM public.event_matching_changes WHERE processed_at IS NULL
+                FROM public.event_matching_changes WHERE processed_at IS NULL{event_filter}
                 ORDER BY created_at, id LIMIT :limit
             """),
-                    {"limit": limit},
+                    parameters,
                 )
             ).all()
         return [

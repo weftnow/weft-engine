@@ -26,7 +26,7 @@ FastAPI service for Weft matching and related backend operations. F06 engine mat
 - Never equate matching with guest acceptance or a physical introduction. Missing profile information stays unknown and does not gate eligibility.
 - Use Poetry and its lockfile. Keep dependency changes deliberate; do not introduce databases, queues, providers, or services solely to populate the architecture.
 - Do not edit generated lockfiles by hand, apply migrations at startup, or log profile content, organizer-only information, credentials, or provider payloads.
-- Database/integration tests require explicitly isolated disposable resources. Never inherit production credentials for tests.
+- Database-backed integration tests run only against Neon project `Weft B2B`, branch `dev`, database `weft_console_test` (`weft-console-test`). Never start or use a local database for these tests. The opt-in fixture may apply additive `weft_engine` migrations and must preserve Console schemas and unrelated rows; it may clean only its generated synthetic rows. Verify the database name and Neon host before connecting. Never use production, preview, or another database, and never inherit ambient production credentials for tests.
 
 ## Commands and completion
 

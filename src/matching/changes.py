@@ -174,14 +174,17 @@ def derive_state(
 
 
 async def ingest(
-    sessions: async_sessionmaker[AsyncSession], console: ConsoleAdapter, poll_limit: int
+    sessions: async_sessionmaker[AsyncSession],
+    console: ConsoleAdapter,
+    poll_limit: int,
+    event_ids: set[UUID] | None = None,
 ) -> int:
     """Copy unprocessed Console change rows into receipts, then mark them processed.
 
     Receipts are written first with ON CONFLICT DO NOTHING, so a crash before the Console update
     only means the rows are read again; they never create a second receipt.
     """
-    rows = await console.pending_changes(poll_limit)
+    rows = await console.pending_changes(poll_limit, event_ids=event_ids)
     if not rows:
         return 0
     organizations = {
@@ -292,32 +295,40 @@ async def _database_now(session: AsyncSession) -> datetime:
     return value
 
 
-async def _active_run_events(session: AsyncSession) -> set[UUID]:
-    rows = await session.scalars(
-        select(Run.event_id).where(Run.status.in_(ACTIVE_RUN_STATUSES)).distinct()
-    )
+async def _active_run_events(
+    session: AsyncSession, event_ids: set[UUID] | None = None
+) -> set[UUID]:
+    statement = select(Run.event_id).where(Run.status.in_(ACTIVE_RUN_STATUSES)).distinct()
+    if event_ids is not None:
+        statement = statement.where(Run.event_id.in_(event_ids))
+    rows = await session.scalars(statement)
     return set(rows)
 
 
-async def _scheduled_batch_events(session: AsyncSession) -> set[UUID]:
-    rows = await session.scalars(
-        select(ChangeBatch.event_id).where(ChangeBatch.state == "scheduled").distinct()
-    )
+async def _scheduled_batch_events(
+    session: AsyncSession, event_ids: set[UUID] | None = None
+) -> set[UUID]:
+    statement = select(ChangeBatch.event_id).where(ChangeBatch.state == "scheduled").distinct()
+    if event_ids is not None:
+        statement = statement.where(ChangeBatch.event_id.in_(event_ids))
+    rows = await session.scalars(statement)
     return set(rows)
 
 
-async def _pending_by_event(session: AsyncSession) -> dict[UUID, PendingChanges]:
-    rows = await session.execute(
-        select(
-            ChangeReceipt.event_id,
-            ChangeReceipt.organization_id,
-            func.count(),
-            func.min(ChangeReceipt.change_created_at),
-            func.max(ChangeReceipt.change_created_at),
-        )
-        .where(ChangeReceipt.batch_id.is_(None))
-        .group_by(ChangeReceipt.event_id, ChangeReceipt.organization_id)
-    )
+async def _pending_by_event(
+    session: AsyncSession, event_ids: set[UUID] | None = None
+) -> dict[UUID, PendingChanges]:
+    statement = select(
+        ChangeReceipt.event_id,
+        ChangeReceipt.organization_id,
+        func.count(),
+        func.min(ChangeReceipt.change_created_at),
+        func.max(ChangeReceipt.change_created_at),
+    ).where(ChangeReceipt.batch_id.is_(None))
+    statement = statement.group_by(ChangeReceipt.event_id, ChangeReceipt.organization_id)
+    if event_ids is not None:
+        statement = statement.where(ChangeReceipt.event_id.in_(event_ids))
+    rows = await session.execute(statement)
     return {
         event_id: PendingChanges(organization_id, count, oldest, newest)
         for event_id, organization_id, count, oldest, newest in rows
@@ -468,20 +479,22 @@ async def schedule(
     sessions: async_sessionmaker[AsyncSession],
     console: ConsoleAdapter,
     settings: Settings,
+    event_ids: set[UUID] | None = None,
 ) -> int:
     """Create runs for events whose changes are due, and for batches whose backoff elapsed."""
     async with sessions() as session:
         now = await _database_now(session)
-        pending = await _pending_by_event(session)
-        active_run_events = await _active_run_events(session)
-        busy = active_run_events | await _scheduled_batch_events(session)
+        pending = await _pending_by_event(session, event_ids)
+        active_run_events = await _active_run_events(session, event_ids)
+        busy = active_run_events | await _scheduled_batch_events(session, event_ids)
+        candidate_statement = select(
+            ChangeBatch.id, ChangeBatch.event_id, ChangeBatch.next_attempt_at
+        ).where(ChangeBatch.state == "scheduled", ChangeBatch.next_attempt_at.is_not(None))
+        if event_ids is not None:
+            candidate_statement = candidate_statement.where(ChangeBatch.event_id.in_(event_ids))
         candidates = [
             RetryCandidate(batch_id, event_id, next_attempt_at)
-            for batch_id, event_id, next_attempt_at in await session.execute(
-                select(ChangeBatch.id, ChangeBatch.event_id, ChangeBatch.next_attempt_at).where(
-                    ChangeBatch.state == "scheduled", ChangeBatch.next_attempt_at.is_not(None)
-                )
-            )
+            for batch_id, event_id, next_attempt_at in await session.execute(candidate_statement)
             if next_attempt_at is not None
         ]
     created = 0
@@ -502,12 +515,16 @@ async def schedule(
     return created
 
 
-async def settle(sessions: async_sessionmaker[AsyncSession], settings: Settings) -> int:
+async def settle(
+    sessions: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    event_ids: set[UUID] | None = None,
+) -> int:
     """Close batches whose run ended: complete them, or plan the next attempt, or abandon."""
     settled = 0
     async with sessions() as session, session.begin():
         now = await _database_now(session)
-        rows = await session.execute(
+        statement = (
             select(ChangeBatch, Run)
             .join(Run, Run.id == ChangeBatch.last_run_id)
             .where(
@@ -517,6 +534,9 @@ async def settle(sessions: async_sessionmaker[AsyncSession], settings: Settings)
             )
             .with_for_update(of=ChangeBatch, skip_locked=True)
         )
+        if event_ids is not None:
+            statement = statement.where(ChangeBatch.event_id.in_(event_ids))
+        rows = await session.execute(statement)
         for batch, run in rows.all():
             settled += 1
             if run.status == "finished":

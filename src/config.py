@@ -40,16 +40,31 @@ class Settings(BaseSettings):
     matching_input_cost_per_million_usd: float = 0.0
     matching_output_cost_per_million_usd: float = 0.0
     matching_worker_id: str = "weft-matching-worker"
-    matching_provider_concurrency: int = Field(default=2, ge=1, le=8)
+    matching_provider_concurrency: int = Field(default=4, ge=1, le=8)
     matching_embedding_cost_per_million_usd: float = 0.0
     matching_automatic_enabled: bool = False
     matching_change_quiet_seconds: int = Field(default=30, ge=0)
     matching_change_max_wait_seconds: int = Field(default=300, ge=0)
     matching_change_retry_limit: int = Field(default=3, ge=0, le=10)
     matching_change_poll_limit: int = Field(default=500, ge=1, le=5000)
+    matching_experiments_enabled: bool = False
+    matching_screening_threshold: int = Field(default=60, ge=50, le=70)
+    matching_candidate_search_mode: str = "20_40"
+    matching_retrieval_experiment_mode: str = "blended"
 
     @model_validator(mode="after")
     def protect_production_docs(self) -> Settings:
         if self.environment is Environment.PRODUCTION and self.docs_enabled:
             raise ValueError("Set WEFT_DOCS_ENABLED=false in production")
+        if self.matching_screening_threshold not in {50, 60, 70}:
+            raise ValueError("matching screening threshold must be 50, 60, or 70")
+        if self.matching_candidate_search_mode not in {"20_40", "8_20_40", "12_20_40"}:
+            raise ValueError("unsupported matching candidate search mode")
+        if self.matching_retrieval_experiment_mode not in {
+            "blended",
+            "needs_offers",
+            "reverse_needs_offers",
+            "shared_context",
+        }:
+            raise ValueError("unsupported matching retrieval experiment mode")
         return self

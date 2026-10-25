@@ -1,6 +1,6 @@
 # Verification
 
-Run commands from the repository root with Python 3.14, Poetry 2.2+, Make, and installed dependencies. Initial resolution needs PyPI; subsequent environments use `poetry.lock`. Unit checks require no provider or database. F06 acceptance also needs an explicitly isolated disposable PostgreSQL database with representative Console tables and `weft_engine`, plus separately supplied live-provider credentials and an approved spend budget.
+Run commands from the repository root with Python 3.14, Poetry 2.2+, Make, and installed dependencies. Initial resolution needs PyPI; subsequent environments use `poetry.lock`. Unit checks require no provider or database. Database-backed checks use only Neon project `Weft B2B`, branch `dev`, database `weft_console_test` (`weft-console-test`); do not create or use a local database. The opt-in fixture validates the target, preserves Console data, applies only additive `weft_engine` migrations, and cleans only generated synthetic rows. F06 live-provider acceptance separately needs explicitly supplied credentials and an approved spend budget.
 
 | Command | Evidence |
 | --- | --- |
@@ -12,7 +12,7 @@ Run commands from the repository root with Python 3.14, Poetry 2.2+, Make, and i
 | `make test` | pytest runtime/configuration, documentation-checker, and hook-dispatch tests; application branch coverage |
 | `make verify-fast` | Documentation, lint, formatting, and types |
 | `make verify` | All fast checks plus tests |
-| `WEFT_ENGINE_DATABASE_TEST=1 WEFT_ENGINE_TEST_DATABASE_URL=... pytest tests/test_changes_database.py` | Opt-in F07 PostgreSQL integration; needs an explicitly disposable, empty database whose name contains `test` |
+| `WEFT_ENGINE_DATABASE_TEST=1 WEFT_ENGINE_TEST_DATABASE_URL=<Neon weft_console_test URL> WEFT_MATCHING_DATABASE_URL=<same URL> poetry run pytest tests/test_changes_database.py` | Opt-in PostgreSQL integration against Neon `weft-console-test`; validates Neon host/database, upgrades `weft_engine` to head, and preserves Console data. Never use a local database or a production/preview/shared development URL. |
 
 `make format` is an explicit source mutation. Checks and hooks do not fix, stage, or rewrite source. No dummy build command exists: this service runs directly through Uvicorn and uses Poetry only for application dependency management.
 
@@ -23,7 +23,8 @@ Run commands from the repository root with Python 3.14, Poetry 2.2+, Make, and i
 - Future protected operations: cover authenticated/unauthenticated, permitted/denied organization/event scope, malformed input, stale versions, and duplicate delivery.
 - Future persistent jobs/results: use explicitly isolated disposable storage and verify retries, concurrency, stale/invalid output, shutdown/recovery, and delivery idempotency.
 - Future live AI integration: record actual provider/model and versioned synthetic inputs with redacted evidence; mock responses do not prove F06 success.
-- F06 PostgreSQL integration: connect only when explicitly supplied an isolated disposable test database identity and separate credentials. Never reuse production, preview, or shared development database URLs.
+- Matching optimization: unit checks cover bounded overlap, compact identity/evidence validation, lossless source projection, candidate-set parity, and rejected-explanation reallocation. Run Alembic `head` upgrade and worker recovery/reservation races against Neon `weft-console-test`; do not use local databases. Measure provider latency/cost and held-out expert-reviewed quality separately; neither mocked tests nor offline migration SQL establish those gates.
+- F06 PostgreSQL integration: connect only to Neon `weft-console-test` with its explicit test URL. The fixture preserves Console schema/data and cleans only its own generated rows. Never reuse production, preview, or another database URL.
 - F06 live-provider checks: require credentials explicitly supplied for the check, configured model prices, and an approved spend ceiling. Do not read production credentials from ambient shell state or claim live acceptance from mocks.
 
 ## Runtime smoke
@@ -43,7 +44,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 
 The checker derives the root from its location. Fixtures exercise valid/broken/encoded/reference links, missing paths, long instructions, invalid configuration, symlink traversal, and CLI exit status. It checks existence, not Markdown anchors, remote URLs, undefined reference labels, HTML/MDX, or all Markdown grammar. Hook fixtures use stubbed Git/Make processes and temporary directories; they prove dispatch and failure propagation, not actual verification success. See [hooks](HOOKS.md).
 
-Tests isolate dotenv/environment settings and use synthetic values. Future integration tests must require an explicit opt-in, disposable resource identity, bounded cleanup, and separate credentials; never use production by default. Keep live integrations out of normal unit tests.
+Tests isolate dotenv/environment settings and use synthetic values. Database integration tests require an explicit opt-in and the Neon `weft-console-test` URL; the fixture checks the database name and `.neon.tech` hostname, uses random synthetic identities, and bounds cleanup to those test rows. Never start a local database or use production/preview data. Keep live provider integrations out of normal unit tests.
 
 ## Opt-in PostgreSQL matching checks
 

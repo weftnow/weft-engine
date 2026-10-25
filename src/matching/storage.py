@@ -29,12 +29,17 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def provenance_from_settings(settings: Settings) -> dict[str, str]:
+def provenance_from_settings(settings: Settings) -> dict[str, Any]:
     return {
         "embedding_model": settings.matching_embedding_model,
         "evaluation_model": settings.matching_evaluation_model,
         "prompt_version": settings.matching_prompt_version,
         "policy_version": settings.matching_policy_version,
+        "cost_rates_usd_per_million": {
+            "evaluation_input": settings.matching_input_cost_per_million_usd,
+            "evaluation_output": settings.matching_output_cost_per_million_usd,
+            "embedding_input": settings.matching_embedding_cost_per_million_usd,
+        },
     }
 
 
