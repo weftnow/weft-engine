@@ -11,6 +11,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -99,6 +100,98 @@ class Attempt(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BudgetReservation(Base):
+    """Durable cost reservation; unknown billing remains charged until reconciled."""
+
+    __tablename__ = "matching_budget_reservations"
+    __table_args__ = (
+        CheckConstraint("state IN ('reserved','settled','unknown')", name="matching_budget_state"),
+        {"schema": Base.metadata_schema},
+    )
+
+    attempt_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("weft_engine.matching_attempts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("weft_engine.matching_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    reserved_cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False)
+    actual_cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="reserved")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VerificationCache(Base):
+    """Successful evidence verification tied to exact content and privacy context."""
+
+    __tablename__ = "matching_verifications"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "event_id",
+            "input_fingerprint",
+            "privacy_fingerprint",
+            "model",
+            "verifier_version",
+            name="matching_verifications_cache_unique",
+        ),
+        {"schema": Base.metadata_schema},
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    event_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    privacy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    verifier_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    live_attempt_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("weft_engine.matching_attempts.id"), nullable=False
+    )
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ScreeningCache(Base):
+    """Experimental screening cache, structurally separate from full evaluations."""
+
+    __tablename__ = "matching_screenings"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "event_id",
+            "input_fingerprint",
+            "model",
+            "screening_version",
+            name="matching_screenings_cache_unique",
+        ),
+        {"schema": Base.metadata_schema},
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    event_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    screening_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    live_attempt_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("weft_engine.matching_attempts.id"), nullable=False
+    )
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class Embedding(Base):
