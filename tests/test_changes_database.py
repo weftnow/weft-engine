@@ -1,14 +1,13 @@
-"""Opt-in PostgreSQL integration tests for F07 change consumption.
+"""Opt-in PostgreSQL integration tests against Neon ``weft_console_test``.
 
 They run only against an explicitly supplied disposable database:
 
     WEFT_ENGINE_DATABASE_TEST=1
-    WEFT_ENGINE_TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host/weft_engine_test
+    WEFT_ENGINE_TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host/weft_console_test
 
-The database name must contain "test". The target must not already contain Console tables; the
-fixture creates minimal Console-shaped ``public`` tables, applies migrations 0001-0002 with a
-fake provider, and drops everything it created afterwards. Never point this at a shared,
-preview or production database.
+The fixture preserves Console tables and existing rows, uses generated synthetic IDs, upgrades
+only ``weft_engine``, and removes only the synthetic rows it creates. It must never run against
+local, production, preview, or another database.
 """
 
 # ruff: noqa: E501
@@ -41,67 +40,42 @@ from sqlalchemy.ext.asyncio import (
 from src.config import Environment, Settings
 from src.main import create_app
 from src.matching import changes
+from src.matching.compact import Judgment, JudgmentBatch, judgment_fingerprint
 from src.matching.console import ConsoleAdapter
-from src.matching.models import ChangeBatch, ChangeReceipt, FeedEntry, Recommendation, Run
-from src.matching.schemas import Evidence, EvidenceVerification, PairEvaluation, PairEvaluationBatch
-from src.matching.worker import MatchingWorker
+from src.matching.models import (
+    Attempt,
+    BudgetReservation,
+    ChangeBatch,
+    ChangeReceipt,
+    EvaluationCache,
+    FeedEntry,
+    Recommendation,
+    Run,
+    ScreeningCache,
+)
+from src.matching.schemas import Evidence, EvidenceVerification, PairEvaluation
+from src.matching.storage import fingerprint
+from src.matching.worker import MatchingWorker, WorkerFailure
 
 ROOT = Path(__file__).parents[1]
 URL = os.environ.get("WEFT_ENGINE_TEST_DATABASE_URL", "")
 ENABLED = os.environ.get("WEFT_ENGINE_DATABASE_TEST") == "1"
 
-pytestmark = pytest.mark.skipif(
-    not ENABLED or not URL,
-    reason="set WEFT_ENGINE_DATABASE_TEST=1 and WEFT_ENGINE_TEST_DATABASE_URL (disposable database)",
-)
-
-ORG = UUID("10000000-0000-0000-0000-000000000001")
-OTHER_ORG = UUID("10000000-0000-0000-0000-000000000002")
-EVENT = UUID("20000000-0000-0000-0000-000000000001")
-OTHER_EVENT = UUID("20000000-0000-0000-0000-000000000002")
-GUEST_A = UUID("30000000-0000-0000-0000-000000000001")
-GUEST_B = UUID("30000000-0000-0000-0000-000000000002")
-GUEST_C = UUID("30000000-0000-0000-0000-000000000003")
+ORG = uuid4()
+OTHER_ORG = uuid4()
+EVENT = uuid4()
+OTHER_EVENT = uuid4()
+GUEST_A = uuid4()
+GUEST_B = uuid4()
+GUEST_C = uuid4()
 TOKEN = "integration-secret"
-
-CONSOLE_TABLES = (
-    "event_matching_changes",
-    "event_guest_match_blocks",
-    "event_guest_profile_versions",
-    "event_guests",
-    "events",
-)
-CONSOLE_DDL = (
-    """CREATE TABLE public.events (
-      id uuid PRIMARY KEY, organization_id uuid NOT NULL, name text NOT NULL DEFAULT 'Event',
-      description text NOT NULL DEFAULT '', city text NOT NULL DEFAULT 'City',
-      categories text[] NOT NULL DEFAULT '{}', expected_audience text[] NOT NULL DEFAULT '{}')""",
-    """CREATE TABLE public.event_guests (
-      id uuid PRIMARY KEY, event_id uuid NOT NULL REFERENCES public.events(id) ON DELETE CASCADE,
-      person_id uuid NOT NULL, revision integer NOT NULL DEFAULT 1,
-      profile_version integer NOT NULL DEFAULT 1, networking_version integer NOT NULL DEFAULT 1,
-      networking_status text NOT NULL DEFAULT 'included', guest_type text NOT NULL DEFAULT 'Attendee',
-      linkedin text)""",
-    """CREATE TABLE public.event_guest_profile_versions (
-      guest_id uuid NOT NULL, version integer NOT NULL, summary text, goals text, offers text,
-      desired_connections text, avoid text, background text, linkedin_details text,
-      missing_details text[] NOT NULL DEFAULT '{}', organizer_only_fields text[] NOT NULL DEFAULT '{}',
-      PRIMARY KEY (guest_id, version))""",
-    """CREATE TABLE public.event_guest_match_blocks (
-      event_id uuid NOT NULL, guest_low_id uuid NOT NULL, guest_high_id uuid NOT NULL,
-      PRIMARY KEY (event_id, guest_low_id, guest_high_id))""",
-    """CREATE TABLE public.event_matching_changes (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      event_id uuid NOT NULL REFERENCES public.events(id) ON DELETE CASCADE,
-      kind text NOT NULL, guest_ids uuid[] NOT NULL, actor_id uuid, reason text,
-      created_at timestamptz NOT NULL DEFAULT now(), processed_at timestamptz)""",
-)
 
 
 class FakeProvider:
     """Deterministic stand-in for the OpenAI client; scores every pair 85 with exact quotes."""
 
     def __init__(self) -> None:
+        self.parse_calls = 0
         self.embeddings = SimpleNamespace(create=self._embed)
         self.responses = SimpleNamespace(parse=self._parse)
 
@@ -112,37 +86,30 @@ class FakeProvider:
         )
 
     async def _parse(self, *, text_format: Any, input: str, **_: Any) -> Any:
+        self.parse_calls += 1
         usage = SimpleNamespace(input_tokens=10, output_tokens=10)
         payload = json.loads(input)
-        if text_format is PairEvaluationBatch:
+        if text_format is JudgmentBatch:
             pairs = []
-            for item in payload:
-                first, second = UUID(item["guest_a_id"]), UUID(item["guest_b_id"])
+            for item in payload["pairs"]:
+                refs = [
+                    f"{key}.{next(iter(payload['guests'][key]['facts']))}"
+                    for key in (item["a"], item["b"])
+                ]
                 pairs.append(
-                    PairEvaluation(
-                        guest_a_id=first,
-                        guest_b_id=second,
-                        benefit_a="Can learn from the other guest's work.",
-                        benefit_b="Can share expertise with the other guest.",
-                        score_a=85,
-                        score_b=85,
-                        evidence=[
-                            Evidence(
-                                guest_id=first, field="summary", quote=item["guest_a"]["summary"]
-                            ),
-                            Evidence(
-                                guest_id=second, field="summary", quote=item["guest_b"]["summary"]
-                            ),
-                        ],
-                        missing_information_a=[],
-                        missing_information_b=[],
-                        uncertainty="Interest is unconfirmed.",
-                        restriction_found=False,
+                    Judgment(
+                        ref=item["ref"],
+                        a=85,
+                        b=85,
+                        ca="Can learn from the other guest's work.",
+                        cb="Can share expertise with the other guest.",
+                        ea=refs,
+                        eb=refs,
+                        r=False,
+                        u="unconfirmed_interest",
                     )
                 )
-            return SimpleNamespace(
-                id="fake", usage=usage, output_parsed=PairEvaluationBatch(pairs=pairs)
-            )
+            return SimpleNamespace(id="fake", usage=usage, output_parsed=JudgmentBatch(pairs=pairs))
         evidence = payload["evidence"]
         return SimpleNamespace(
             id="fake",
@@ -161,6 +128,7 @@ class World:
     sessions: async_sessionmaker[AsyncSession]
     console: ConsoleAdapter
     settings: Settings
+    actor_id: UUID
 
     def worker(self) -> MatchingWorker:
         return MatchingWorker(self.sessions, self.console, self.settings, client=FakeProvider())  # type: ignore[arg-type]
@@ -175,20 +143,47 @@ class World:
 
     async def seed_event(self, event_id: UUID, org: UUID, summaries: dict[UUID, str]) -> None:
         await self.sql(
-            "INSERT INTO public.events(id, organization_id) VALUES (:e, :o)", e=event_id, o=org
+            "INSERT INTO public.organizations(id,name) VALUES (:o,:name)",
+            o=org,
+            name=f"Synthetic matching test {org}",
         )
-        for guest_id, summary in summaries.items():
+        await self.sql(
+            "INSERT INTO public.events(id,organization_id,creator_id,name,description,city,"
+            "categories,expected_audience,start_date,end_date,timezone,starts_at,ends_at) "
+            "VALUES (:e,:o,:actor,'Synthetic test event','Integration fixture','Las Vegas, USA',"
+            "ARRAY['Technology']::text[],ARRAY[]::text[],'2026-01-01','2026-01-01','UTC',"
+            "'2026-01-01T00:00:00Z','2026-01-01T23:59:59Z')",
+            e=event_id,
+            o=org,
+            actor=self.actor_id,
+        )
+        for position, (guest_id, summary) in enumerate(summaries.items(), start=1):
+            person_id = uuid4()
             await self.sql(
-                "INSERT INTO public.event_guests(id, event_id, person_id) VALUES (:g, :e, :p)",
-                g=guest_id,
+                "INSERT INTO public.event_people(id,event_id) VALUES (:p,:e)",
+                p=person_id,
                 e=event_id,
-                p=uuid4(),
             )
             await self.sql(
-                "INSERT INTO public.event_guest_profile_versions(guest_id, version, summary) "
-                "VALUES (:g, 1, :s)",
+                "INSERT INTO public.event_guests(id,event_id,person_id,position,first_name,last_name,"
+                "email,normalized_email,phone,company,job_position,profile_type,linkedin,guest_type,"
+                "source,profile_version) VALUES (:g,:e,:p,:position,:first,:last,:email,lower(:email),"
+                "'','Synthetic company','Attendee','Attendee','','Attendee','manual',1)",
+                g=guest_id,
+                e=event_id,
+                p=person_id,
+                position=position,
+                first=f"Synthetic{position}",
+                last="Guest",
+                email=f"{guest_id}@invalid.test",
+            )
+            await self.sql(
+                "INSERT INTO public.event_guest_profile_versions("
+                "event_id,guest_id,version,summary,created_by) VALUES (:e,:g,1,:s,:actor)",
+                e=event_id,
                 g=guest_id,
                 s=summary,
+                actor=self.actor_id,
             )
 
     async def add_change(
@@ -196,38 +191,64 @@ class World:
     ) -> UUID:
         change_id = uuid4()
         await self.sql(
-            "INSERT INTO public.event_matching_changes(id, event_id, kind, guest_ids, created_at) "
-            "VALUES (:i, :e, :k, :g, now() - (:age * interval '1 second'))",
+            "INSERT INTO public.event_matching_changes("
+            "id,event_id,kind,guest_ids,actor_id,created_at) "
+            "VALUES (:i,:e,:k,:g,:actor,now() - (:age * interval '1 second'))",
             i=change_id,
             e=event_id,
             k=kind,
             g=guests,
+            actor=self.actor_id,
             age=age_seconds,
         )
         return change_id
 
     async def exclude(self, guest_id: UUID, excluded: bool = True) -> None:
-        await self.sql(
-            "UPDATE public.event_guests SET networking_status=:s, "
-            "networking_version=networking_version+1 WHERE id=:g",
-            s="excluded" if excluded else "included",
-            g=guest_id,
-        )
+        if excluded:
+            await self.sql(
+                "UPDATE public.event_guests SET networking_status='excluded', "
+                "networking_excluded_at=now(), networking_excluded_by=:actor, "
+                "networking_exclusion_reason='other', "
+                "networking_version=networking_version+1 WHERE id=:g",
+                actor=self.actor_id,
+                g=guest_id,
+            )
+        else:
+            await self.sql(
+                "UPDATE public.event_guests SET networking_status='included', "
+                "networking_excluded_at=NULL, networking_excluded_by=NULL, "
+                "networking_exclusion_reason=NULL, "
+                "networking_version=networking_version+1 WHERE id=:g",
+                g=guest_id,
+            )
 
     async def cycle(self) -> None:
-        await changes.ingest(self.sessions, self.console, 500)
-        await changes.settle(self.sessions, self.settings)
-        await changes.schedule(self.sessions, self.console, self.settings)
+        event_ids = {EVENT, OTHER_EVENT}
+        await changes.ingest(self.sessions, self.console, 500, event_ids=event_ids)
+        await changes.settle(self.sessions, self.settings, event_ids=event_ids)
+        await changes.schedule(self.sessions, self.console, self.settings, event_ids=event_ids)
 
     async def runs(self) -> list[Run]:
         async with self.sessions() as session:
-            return list(await session.scalars(select(Run).order_by(Run.created_at, Run.id)))
+            return list(
+                await session.scalars(
+                    select(Run).where(Run.event_id == EVENT).order_by(Run.created_at, Run.id)
+                )
+            )
 
     async def batches(self) -> list[ChangeBatch]:
         async with self.sessions() as session:
-            return list(await session.scalars(select(ChangeBatch).order_by(ChangeBatch.created_at)))
+            return list(
+                await session.scalars(
+                    select(ChangeBatch)
+                    .where(ChangeBatch.event_id == EVENT)
+                    .order_by(ChangeBatch.created_at)
+                )
+            )
 
-    async def feed(self, event_id: UUID = EVENT) -> list[tuple[str, UUID]]:
+    async def feed(self, event_id: UUID | None = None) -> list[tuple[str, UUID]]:
+        if event_id is None:
+            event_id = EVENT
         async with self.sessions() as session:
             rows = await session.execute(
                 select(FeedEntry.kind, FeedEntry.recommendation_id)
@@ -244,22 +265,78 @@ def apply_migrations() -> None:
     command.upgrade(config, "head")
 
 
+def _validated_database_url(raw_url: str) -> str:
+    parsed_url = make_url(raw_url)
+    if parsed_url.database != "weft_console_test" or not (parsed_url.host or "").endswith(
+        ".neon.tech"
+    ):
+        raise ValueError("database tests are restricted to Neon database weft_console_test")
+    query = {
+        key: value
+        for key, value in parsed_url.query.items()
+        if key not in {"channel_binding", "sslmode"}
+    }
+    if parsed_url.query.get("sslmode") == "require":
+        query["ssl"] = "require"
+    if parsed_url.drivername in {"postgres", "postgresql"}:
+        parsed_url = parsed_url.set(drivername="postgresql+asyncpg")
+    return parsed_url.set(query=query).render_as_string(hide_password=False)
+
+
 @pytest.fixture
 async def world(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[World]:
-    name = make_url(URL).database or ""
-    if "test" not in name:
-        pytest.skip("refusing a database whose name does not contain 'test'")
-    engine = create_async_engine(URL, hide_parameters=True)
+    if not ENABLED or not URL:
+        pytest.skip(
+            "set WEFT_ENGINE_DATABASE_TEST=1 and WEFT_ENGINE_TEST_DATABASE_URL "
+            "for Neon weft-console-test"
+        )
+    for name in ("ORG", "OTHER_ORG", "EVENT", "OTHER_EVENT", "GUEST_A", "GUEST_B", "GUEST_C"):
+        monkeypatch.setitem(globals(), name, uuid4())
+    monkeypatch.setitem(
+        globals(),
+        "SUMMARIES",
+        {
+            GUEST_A: "Building open-source payments tools for rural clinics",
+            GUEST_B: "Running clinic payment deployments across rural regions",
+            GUEST_C: "Training community health workers on mobile tools",
+        },
+    )
     try:
-        if await _scalar(engine, "SELECT to_regclass('public.events')") is not None:
-            pytest.skip(
-                "target already contains Console tables; supply an empty disposable database"
-            )
-        await _execute(engine, "DROP SCHEMA IF EXISTS weft_engine CASCADE")
-        for statement in CONSOLE_DDL:
-            await _execute(engine, statement)
-        monkeypatch.setenv("WEFT_MATCHING_DATABASE_URL", URL)
+        database_url = _validated_database_url(URL)
+    except ValueError as error:
+        pytest.fail(str(error), pytrace=False)
+    engine = create_async_engine(
+        database_url, hide_parameters=True, pool_pre_ping=True, pool_recycle=60
+    )
+    sessions_engine = create_async_engine(
+        database_url, hide_parameters=True, pool_pre_ping=True, pool_recycle=60
+    )
+    world_instance: World | None = None
+    try:
+        required_tables = (
+            "events",
+            "event_people",
+            "event_guests",
+            "event_guest_profile_versions",
+            "event_guest_match_blocks",
+            "event_matching_changes",
+        )
+        for table in required_tables:
+            if await _scalar(engine, f"SELECT to_regclass('public.{table}')") is None:
+                pytest.fail(f"Neon weft_console_test is missing public.{table}")
+        actor_id = await _scalar(engine, "SELECT id FROM public.users ORDER BY id LIMIT 1")
+        if actor_id is None:
+            pytest.fail("Neon weft_console_test needs one existing user for Console foreign keys")
+        monkeypatch.setenv("WEFT_MATCHING_DATABASE_URL", database_url)
         await asyncio.to_thread(apply_migrations)
+        for table in (
+            "matching_budget_reservations",
+            "matching_verifications",
+            "matching_screenings",
+        ):
+            if await _scalar(engine, f"SELECT to_regclass('weft_engine.{table}')") is None:
+                pytest.fail(f"Neon weft-console-test migration is missing weft_engine.{table}")
+        await cleanup_stale_synthetic_rows(engine)
         settings = Settings(
             _env_file=None,
             environment=Environment.TEST,
@@ -272,16 +349,142 @@ async def world(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[World]:
             matching_embedding_cost_per_million_usd=1.0,
             matching_service_tokens={TOKEN: [str(ORG)]},
         )
-        sessions = async_sessionmaker(
-            create_async_engine(URL, hide_parameters=True), expire_on_commit=False
+        sessions = async_sessionmaker(sessions_engine, expire_on_commit=False)
+        world_instance = World(
+            engine, sessions, ConsoleAdapter(engine), settings, UUID(str(actor_id))
         )
-        yield World(engine, sessions, ConsoleAdapter(engine), settings)
-        await sessions.kw["bind"].dispose()
-    finally:
-        await _execute(engine, "DROP SCHEMA IF EXISTS weft_engine CASCADE")
-        for table in CONSOLE_TABLES:
-            await _execute(engine, f"DROP TABLE IF EXISTS public.{table} CASCADE")
+    except Exception:
+        await sessions_engine.dispose()
         await engine.dispose()
+        pytest.fail(
+            "Could not initialize Neon weft-console-test; database error details are suppressed "
+            "to protect connection credentials.",
+            pytrace=False,
+        )
+
+    assert world_instance is not None
+    try:
+        yield world_instance
+    finally:
+        try:
+            await cleanup_world(world_instance)
+        except Exception:
+            pytest.fail(
+                "Could not clean synthetic rows from Neon weft-console-test; "
+                "database error details are suppressed to protect connection credentials.",
+                pytrace=False,
+            )
+        finally:
+            await sessions_engine.dispose()
+            await engine.dispose()
+
+
+async def cleanup_world(world: World) -> None:
+    """Remove only synthetic event-scoped rows; retain Console and engine schemas."""
+    event_ids = [EVENT, OTHER_EVENT]
+    await cleanup_synthetic_rows(world.engine, event_ids, [ORG, OTHER_ORG])
+
+
+async def cleanup_stale_synthetic_rows(engine: AsyncEngine) -> None:
+    """Recover test-owned synthetic rows left by an interrupted previous test process."""
+    async with engine.connect() as connection:
+        org_ids = list(
+            await connection.scalars(
+                text(
+                    "SELECT id FROM public.organizations WHERE name LIKE 'Synthetic matching test %'"
+                )
+            )
+        )
+        if not org_ids:
+            return
+        event_ids = list(
+            await connection.scalars(
+                text(
+                    "SELECT id FROM public.events WHERE organization_id = ANY(:orgs) "
+                    "AND name='Synthetic test event' AND description='Integration fixture'"
+                ),
+                {"orgs": org_ids},
+            )
+        )
+    await cleanup_synthetic_rows(engine, event_ids, org_ids)
+
+
+async def cleanup_synthetic_rows(
+    engine: AsyncEngine, event_ids: list[UUID], org_ids: list[UUID]
+) -> None:
+    """Delete only synthetic test events and their engine-owned records."""
+    async with engine.begin() as connection:
+        for table in (
+            "matching_feed_entries",
+            "recommendations",
+            "matching_verifications",
+            "matching_screenings",
+            "matching_embeddings",
+            "matching_evaluations",
+            "matching_change_receipts",
+            "matching_slot_grants",
+        ):
+            await connection.execute(
+                text(f"DELETE FROM weft_engine.{table} WHERE event_id = ANY(:events)"),
+                {"events": event_ids},
+            )
+        await connection.execute(
+            text(
+                "DELETE FROM weft_engine.matching_budget_reservations "
+                "WHERE run_id IN (SELECT id FROM weft_engine.matching_runs "
+                "WHERE event_id = ANY(:events))"
+            ),
+            {"events": event_ids},
+        )
+        await connection.execute(
+            text(
+                "DELETE FROM weft_engine.matching_attempts "
+                "WHERE run_id IN (SELECT id FROM weft_engine.matching_runs "
+                "WHERE event_id = ANY(:events))"
+            ),
+            {"events": event_ids},
+        )
+        await connection.execute(
+            text(
+                "UPDATE weft_engine.matching_runs SET change_batch_id=NULL "
+                "WHERE event_id = ANY(:events)"
+            ),
+            {"events": event_ids},
+        )
+        await connection.execute(
+            text(
+                "UPDATE weft_engine.matching_change_batches SET last_run_id=NULL "
+                "WHERE event_id = ANY(:events)"
+            ),
+            {"events": event_ids},
+        )
+        await connection.execute(
+            text("DELETE FROM weft_engine.matching_change_batches WHERE event_id = ANY(:events)"),
+            {"events": event_ids},
+        )
+        await connection.execute(
+            text("DELETE FROM weft_engine.matching_runs WHERE event_id = ANY(:events)"),
+            {"events": event_ids},
+        )
+        for table in (
+            "event_matching_changes",
+            "event_guest_match_blocks",
+            "event_guest_profile_versions",
+            "event_guests",
+            "event_people",
+        ):
+            await connection.execute(
+                text(f"DELETE FROM public.{table} WHERE event_id = ANY(:events)"),
+                {"events": event_ids},
+            )
+        await connection.execute(
+            text("DELETE FROM public.events WHERE id = ANY(:events)"),
+            {"events": event_ids},
+        )
+        await connection.execute(
+            text("DELETE FROM public.organizations WHERE id = ANY(:orgs)"),
+            {"orgs": org_ids},
+        )
 
 
 async def _execute(engine: AsyncEngine, statement: str) -> None:
@@ -303,17 +506,239 @@ SUMMARIES = {
 
 async def receipt_count(world: World) -> int:
     async with world.sessions() as session:
-        return int(await session.scalar(select(func.count()).select_from(ChangeReceipt)) or 0)
+        return int(
+            await session.scalar(
+                select(func.count())
+                .select_from(ChangeReceipt)
+                .where(ChangeReceipt.event_id == EVENT)
+            )
+            or 0
+        )
+
+
+def test_database_target_requires_the_named_neon_test_database() -> None:
+    url = _validated_database_url(
+        "postgresql://test:secret@ep-example-pooler.us-east-2.aws.neon.tech/"
+        "weft_console_test?sslmode=require&channel_binding=require"
+    )
+    assert url.startswith(
+        "postgresql+asyncpg://test:secret@ep-example-pooler.us-east-2.aws.neon.tech/"
+    )
+    assert "channel_binding" not in url
+    assert "ssl=require" in url
+
+    with pytest.raises(ValueError, match="restricted to Neon database"):
+        _validated_database_url("postgresql://user:secret@localhost/weft_console_test")
+    with pytest.raises(ValueError, match="restricted to Neon database"):
+        _validated_database_url(
+            "postgresql://user:secret@ep-example.us-east-2.aws.neon.tech/production"
+        )
+
+
+async def _budget_test_run(world: World, max_spend_usd: float) -> tuple[Run, MatchingWorker]:
+    await world.seed_event(EVENT, ORG, SUMMARIES)
+    await world.add_change(EVENT, "profile_updated", [GUEST_A])
+    await world.cycle()
+    [run] = await world.runs()
+    settings = world.settings.model_copy(update={"matching_max_spend_usd": max_spend_usd})
+    worker = MatchingWorker(world.sessions, world.console, settings, client=FakeProvider())  # type: ignore[arg-type]
+    worker._run_id = run.id
+    return run, worker
+
+
+async def _add_attempts(world: World, run_id: UUID, count: int) -> list[UUID]:
+    ids = [uuid4() for _ in range(count)]
+    async with world.sessions() as session, session.begin():
+        for attempt_id in ids:
+            session.add(
+                Attempt(
+                    id=attempt_id,
+                    run_id=run_id,
+                    kind="pair_evaluation_batch",
+                    status="running",
+                    model="test-model",
+                    prompt_version="test-v1",
+                    input_fingerprint=str(attempt_id),
+                )
+            )
+    return ids
+
+
+async def test_budget_reservations_serialize_concurrent_admission(world: World) -> None:
+    run, worker = await _budget_test_run(world, max_spend_usd=0.000015)
+    first, second = await _add_attempts(world, run.id, 2)
+
+    async def reserve(attempt_id: UUID) -> bool:
+        try:
+            await worker.budget_check(10, input_rate=1.0, attempt_id=attempt_id)
+            return True
+        except WorkerFailure as error:
+            assert error.code == "spend_budget_exhausted"
+            return False
+
+    results = await asyncio.gather(reserve(first), reserve(second))
+    assert sorted(results) == [False, True]
+    async with world.sessions() as session:
+        reservations = list(
+            await session.scalars(
+                select(BudgetReservation).where(BudgetReservation.run_id == run.id)
+            )
+        )
+    assert len(reservations) == 1
+    assert reservations[0].state == "reserved"
+
+
+async def test_unknown_billing_reservation_remains_in_budget_after_recovery(world: World) -> None:
+    run, worker = await _budget_test_run(world, max_spend_usd=0.000015)
+    first, second = await _add_attempts(world, run.id, 2)
+    await worker.budget_check(10, input_rate=1.0, attempt_id=first)
+    await worker.record_usage(run.id, 0, 0, attempt_id=first, confirmed=False)
+
+    recovered_worker = MatchingWorker(
+        world.sessions,
+        world.console,
+        worker.settings,
+        client=FakeProvider(),  # type: ignore[arg-type]
+    )
+    recovered_worker._run_id = run.id
+    with pytest.raises(WorkerFailure, match="budget would be exceeded") as error:
+        await recovered_worker.budget_check(10, input_rate=1.0, attempt_id=second)
+    assert error.value.code == "spend_budget_exhausted"
+    async with world.sessions() as session:
+        reservation = await session.get(BudgetReservation, first)
+    assert reservation is not None and reservation.state == "unknown"
+
+
+async def test_confirmed_usage_settles_reservation_at_actual_cost(world: World) -> None:
+    run, worker = await _budget_test_run(world, max_spend_usd=100.0)
+    [attempt_id] = await _add_attempts(world, run.id, 1)
+    await worker.budget_check(1, input_rate=1.0, attempt_id=attempt_id)
+
+    cost = await worker.record_usage(run.id, 20, 10, input_rate=1.0, attempt_id=attempt_id)
+    async with world.sessions() as session:
+        reservation = await session.get(BudgetReservation, attempt_id)
+        updated_run = await session.get(Run, run.id)
+    assert reservation is not None
+    assert reservation.state == "settled"
+    assert float(reservation.reserved_cost_usd) == pytest.approx(cost)
+    assert float(reservation.actual_cost_usd or 0) == pytest.approx(cost)
+    assert updated_run is not None
+    assert updated_run.usage["provider_confirmed_input_tokens"] == 20
+    assert updated_run.usage["provider_confirmed_output_tokens"] == 10
+
+
+async def test_screening_cache_entry_never_substitutes_for_full_evaluation(world: World) -> None:
+    run, _ = await _budget_test_run(world, max_spend_usd=100.0)
+    guest_a_id, guest_b_id = str(GUEST_A), str(GUEST_B)
+    guests = {
+        guest_a_id: {"id": guest_a_id, "summary": "Builds rural payment systems"},
+        guest_b_id: {"id": guest_b_id, "summary": "Deploys clinic payment systems"},
+    }
+    pair = (min(guest_a_id, guest_b_id), max(guest_a_id, guest_b_id))
+    payload = {
+        "guest_a_id": pair[0],
+        "guest_b_id": pair[1],
+        "guest_a": guests[pair[0]],
+        "guest_b": guests[pair[1]],
+    }
+    screen_attempt_id = uuid4()
+    async with world.sessions() as session, session.begin():
+        session.add(
+            Attempt(
+                id=screen_attempt_id,
+                run_id=run.id,
+                kind="candidate_screening",
+                status="finished",
+                model=world.settings.matching_evaluation_model,
+                prompt_version="screen-test-v1",
+                input_fingerprint=fingerprint(payload),
+            )
+        )
+        session.add(
+            ScreeningCache(
+                id=uuid4(),
+                organization_id=run.organization_id,
+                event_id=run.event_id,
+                input_fingerprint=fingerprint(payload),
+                model=world.settings.matching_evaluation_model,
+                screening_version="screen-test-v1",
+                live_attempt_id=screen_attempt_id,
+                result={"score_a": 95, "score_b": 95, "uncertain": False},
+            )
+        )
+
+    provider = FakeProvider()
+    worker = MatchingWorker(world.sessions, world.console, world.settings, client=provider)  # type: ignore[arg-type]
+    worker._run_id = run.id
+    result = await worker.evaluate_batch(run, guests, [pair])
+    assert provider.parse_calls == 1
+    assert pair in result
+    async with world.sessions() as session:
+        full_evaluation = await session.scalar(
+            select(EvaluationCache).where(
+                EvaluationCache.organization_id == run.organization_id,
+                EvaluationCache.pair_fingerprint
+                == judgment_fingerprint(run.event_id, pair, guests),
+            )
+        )
+    assert full_evaluation is not None
+
+
+async def test_verification_cache_reuse_is_scoped_by_privacy_context(world: World) -> None:
+    run, _ = await _budget_test_run(world, max_spend_usd=100.0)
+    provider = FakeProvider()
+    worker = MatchingWorker(world.sessions, world.console, world.settings, client=provider)  # type: ignore[arg-type]
+    worker._run_id = run.id
+    pair = PairEvaluation(
+        guest_a_id=GUEST_A,
+        guest_b_id=GUEST_B,
+        benefit_a="Can share rural payment deployment experience.",
+        benefit_b="Can learn from open-source payment tools.",
+        score_a=85,
+        score_b=85,
+        evidence=[
+            Evidence(
+                guest_id=GUEST_A,
+                field="summary",
+                quote=SUMMARIES[GUEST_A],
+            ),
+            Evidence(
+                guest_id=GUEST_B,
+                field="summary",
+                quote=SUMMARIES[GUEST_B],
+            ),
+        ],
+        missing_information_a=[],
+        missing_information_b=[],
+        uncertainty="Interest is unconfirmed.",
+        restriction_found=False,
+    )
+    guests = {
+        str(GUEST_A): {"summary": SUMMARIES[GUEST_A], "organizer_only_fields": []},
+        str(GUEST_B): {"summary": SUMMARIES[GUEST_B], "organizer_only_fields": []},
+    }
+
+    await worker.verify_pair(run, pair, guests)
+    await worker.verify_pair(run, pair, guests)
+    assert provider.parse_calls == 1
+    assert worker._verification_cache_hits == 1
+
+    # Even an organizer-only field unrelated to these quotes creates a separate cache context.
+    guests[str(GUEST_A)]["organizer_only_fields"] = ["privateNotes"]
+    await worker.verify_pair(run, pair, guests)
+    assert provider.parse_calls == 2
 
 
 async def test_receipts_are_idempotent_and_changes_are_marked_processed(world: World) -> None:
     await world.seed_event(EVENT, ORG, SUMMARIES)
     first = await world.add_change(EVENT, "profile_updated", [GUEST_A])
-    assert await changes.ingest(world.sessions, world.console, 500) == 1
+    assert await changes.ingest(world.sessions, world.console, 500, event_ids={EVENT}) == 1
     assert await receipt_count(world) == 1
     assert (
         await world.scalar(
-            "SELECT count(*) FROM public.event_matching_changes WHERE processed_at IS NULL"
+            "SELECT count(*) FROM public.event_matching_changes "
+            "WHERE event_id=:e AND processed_at IS NULL",
+            e=EVENT,
         )
         == 0
     )
@@ -321,7 +746,7 @@ async def test_receipts_are_idempotent_and_changes_are_marked_processed(world: W
     await world.sql(
         "UPDATE public.event_matching_changes SET processed_at=NULL WHERE id=:i", i=first
     )
-    await changes.ingest(world.sessions, world.console, 500)
+    await changes.ingest(world.sessions, world.console, 500, event_ids={EVENT})
     assert await receipt_count(world) == 1
 
 
@@ -335,9 +760,9 @@ async def test_crash_between_receipt_and_processed_at_leaves_no_duplicates(world
             raise RuntimeError("worker died before marking rows")
 
     with pytest.raises(RuntimeError):
-        await changes.ingest(world.sessions, Crashing(world.engine), 500)
+        await changes.ingest(world.sessions, Crashing(world.engine), 500, event_ids={EVENT})
     assert await receipt_count(world) == 2
-    assert await changes.ingest(world.sessions, world.console, 500) == 2
+    assert await changes.ingest(world.sessions, world.console, 500, event_ids={EVENT}) == 2
     assert await receipt_count(world) == 2
     await world.cycle()
     assert len(await world.runs()) == 1
@@ -350,20 +775,24 @@ async def test_changes_inside_the_quiet_period_coalesce_into_one_run(world: Worl
     await world.seed_event(EVENT, ORG, SUMMARIES)
     for guest_id in (GUEST_A, GUEST_B, GUEST_C, GUEST_A, GUEST_B):
         await world.add_change(EVENT, "profile_updated", [guest_id], age_seconds=5)
-    await changes.ingest(world.sessions, world.console, 500)
-    assert await changes.schedule(world.sessions, world.console, quiet) == 0
+    await changes.ingest(world.sessions, world.console, 500, event_ids={EVENT})
+    assert await changes.schedule(world.sessions, world.console, quiet, event_ids={EVENT}) == 0
     await world.sql(
-        "UPDATE weft_engine.matching_change_receipts SET change_created_at = now() - interval '60 seconds'"
+        "UPDATE weft_engine.matching_change_receipts "
+        "SET change_created_at = now() - interval '60 seconds' WHERE event_id=:e",
+        e=EVENT,
     )
-    assert await changes.schedule(world.sessions, world.console, quiet) == 1
-    assert await changes.schedule(world.sessions, world.console, quiet) == 0
+    assert await changes.schedule(world.sessions, world.console, quiet, event_ids={EVENT}) == 1
+    assert await changes.schedule(world.sessions, world.console, quiet, event_ids={EVENT}) == 0
     runs = await world.runs()
     assert len(runs) == 1
     assert runs[0].trigger == "change"
     assert runs[0].provenance["lifecycle_source"] == "console_none_recorded"
     assert runs[0].snapshot["lifecycle"]["complete"] is True
     attached = await world.scalar(
-        "SELECT count(*) FROM weft_engine.matching_change_receipts WHERE batch_id IS NOT NULL"
+        "SELECT count(*) FROM weft_engine.matching_change_receipts "
+        "WHERE event_id=:e AND batch_id IS NOT NULL",
+        e=EVENT,
     )
     assert attached == 5
 
@@ -371,9 +800,12 @@ async def test_changes_inside_the_quiet_period_coalesce_into_one_run(world: Worl
 async def test_two_workers_never_double_schedule(world: World) -> None:
     await world.seed_event(EVENT, ORG, SUMMARIES)
     await world.add_change(EVENT, "profile_updated", [GUEST_A])
-    await changes.ingest(world.sessions, world.console, 500)
+    await changes.ingest(world.sessions, world.console, 500, event_ids={EVENT})
     results = await asyncio.gather(
-        *(changes.schedule(world.sessions, world.console, world.settings) for _ in range(4))
+        *(
+            changes.schedule(world.sessions, world.console, world.settings, event_ids={EVENT})
+            for _ in range(4)
+        )
     )
     assert sum(results) == 1
     assert len(await world.runs()) == 1
@@ -390,17 +822,21 @@ async def test_transient_failure_retries_with_backoff_then_completes(world: Worl
         "finished_at=now() WHERE id=:i",
         i=first.id,
     )
-    await changes.settle(world.sessions, world.settings)
+    await changes.settle(world.sessions, world.settings, event_ids={EVENT})
     delay = await world.scalar(
-        "SELECT extract(epoch FROM next_attempt_at - now()) FROM weft_engine.matching_change_batches"
+        "SELECT extract(epoch FROM next_attempt_at - now()) "
+        "FROM weft_engine.matching_change_batches WHERE event_id=:e",
+        e=EVENT,
     )
     assert 50 < delay <= 60
-    await changes.schedule(world.sessions, world.console, world.settings)
+    await changes.schedule(world.sessions, world.console, world.settings, event_ids={EVENT})
     assert len(await world.runs()) == 1
     await world.sql(
-        "UPDATE weft_engine.matching_change_batches SET next_attempt_at = now() - interval '1 second'"
+        "UPDATE weft_engine.matching_change_batches "
+        "SET next_attempt_at = now() - interval '1 second' WHERE event_id=:e",
+        e=EVENT,
     )
-    await changes.schedule(world.sessions, world.console, world.settings)
+    await changes.schedule(world.sessions, world.console, world.settings, event_ids={EVENT})
     runs = await world.runs()
     assert [run.idempotency_key for run in runs] == [
         f"f07:{first.change_batch_id}:1",
@@ -410,7 +846,7 @@ async def test_transient_failure_retries_with_backoff_then_completes(world: Worl
         "UPDATE weft_engine.matching_runs SET status='finished', finished_at=now() WHERE id=:i",
         i=runs[1].id,
     )
-    await changes.settle(world.sessions, world.settings)
+    await changes.settle(world.sessions, world.settings, event_ids={EVENT})
     [batch] = await world.batches()
     assert (batch.state, batch.attempt) == ("completed", 2)
 
@@ -465,7 +901,11 @@ async def test_exclusion_revokes_frees_capacity_and_pair_is_never_reissued(world
     async with world.sessions() as session:
         revoked = list(
             await session.scalars(
-                select(Recommendation).where(Recommendation.revoked_at.is_not(None))
+                select(Recommendation).where(
+                    Recommendation.organization_id == ORG,
+                    Recommendation.event_id == EVENT,
+                    Recommendation.revoked_at.is_not(None),
+                )
             )
         )
     assert len(revoked) == 2
@@ -482,7 +922,11 @@ async def test_exclusion_revokes_frees_capacity_and_pair_is_never_reissued(world
     kinds = [kind for kind, _ in await world.feed()]
     assert kinds.count("issued") == 3, "a revoked pair must not be issued again"
     async with world.sessions() as session:
-        total = await session.scalar(select(func.count()).select_from(Recommendation))
+        total = await session.scalar(
+            select(func.count())
+            .select_from(Recommendation)
+            .where(Recommendation.organization_id == ORG, Recommendation.event_id == EVENT)
+        )
     assert total == 3
 
 
@@ -500,7 +944,11 @@ async def test_exclusion_is_revoked_at_schedule_time_before_any_provider_work(wo
         revoked = await session.scalar(
             select(func.count())
             .select_from(Recommendation)
-            .where(Recommendation.revoked_at.is_not(None))
+            .where(
+                Recommendation.organization_id == ORG,
+                Recommendation.event_id == EVENT,
+                Recommendation.revoked_at.is_not(None),
+            )
         )
     assert revoked == 2
 

@@ -42,3 +42,13 @@ No UI redesign, attendee questionnaire/app, automatic invitations or communicati
 - How current availability affects recalculation, introduction limits, and explicit cancellation/replacement integration.
 
 These decisions are not silently defaulted by the scaffold. See [architecture](../ARCHITECTURE.md) and [domain](domain.md) for boundaries.
+
+## Authorized matching cost revision (2026-10-25)
+
+Retain the existing candidate judgments and reciprocal allocation policy while replacing verbose
+per-candidate reports with compact evidence-backed judgments. Longer shareable explanations are
+generated only for selected pairs. Missing-information lists use recorded missing details; unknown
+facts are not invented. A failed evidence explanation excludes that pair and permits selection
+from remaining evaluated candidates. Candidate-count reduction and alternate ranking/models are
+deferred. This is authorized behavior; live cost and semantic-quality acceptance remain pending
+in the [optimization plan](exec-plans/active/2026-10-24-matching-engine-optimization.md).
