@@ -99,7 +99,8 @@ class ConsoleAdapter:
                 (
                     await connection.execute(
                         text("""
-                SELECT id, organization_id, name, description, city, categories, expected_audience
+                SELECT id, organization_id, name, description, city, categories, expected_audience,
+                       language
                 FROM public.events WHERE id=:event_id AND organization_id=:organization_id
             """),
                         {"event_id": event_id, "organization_id": organization_id},

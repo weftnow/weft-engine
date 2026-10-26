@@ -76,6 +76,7 @@ class FakeProvider:
 
     def __init__(self) -> None:
         self.parse_calls = 0
+        self.instructions: list[str] = []
         self.embeddings = SimpleNamespace(create=self._embed)
         self.responses = SimpleNamespace(parse=self._parse)
 
@@ -85,8 +86,11 @@ class FakeProvider:
             data=[SimpleNamespace(embedding=[1.0, 0.0]) for _ in input],
         )
 
-    async def _parse(self, *, text_format: Any, input: str, **_: Any) -> Any:
+    async def _parse(
+        self, *, text_format: Any, input: str, instructions: str = "", **_: Any
+    ) -> Any:
         self.parse_calls += 1
+        self.instructions.append(instructions)
         usage = SimpleNamespace(input_tokens=10, output_tokens=10)
         payload = json.loads(input)
         if text_format is JudgmentBatch:
@@ -1009,3 +1013,46 @@ async def test_status_and_feed_endpoints_report_the_event_lifecycle(world: World
         assert end == {"entries": [], "nextCursor": rest["nextCursor"]}
         wrong_org = base.replace(str(ORG), str(OTHER_ORG))
         assert (await client.get(f"{wrong_org}/feed", headers=headers)).status_code == 403
+
+
+async def test_verification_follows_the_event_language_and_never_reuses_the_other_one(
+    world: World,
+) -> None:
+    run, _ = await _budget_test_run(world, max_spend_usd=100.0)
+    provider = FakeProvider()
+    worker = MatchingWorker(world.sessions, world.console, world.settings, client=provider)  # type: ignore[arg-type]
+    worker._run_id = run.id
+    pair = PairEvaluation(
+        guest_a_id=GUEST_A,
+        guest_b_id=GUEST_B,
+        benefit_a="Can share rural payment deployment experience.",
+        benefit_b="Can learn from open-source payment tools.",
+        score_a=85,
+        score_b=85,
+        evidence=[
+            Evidence(guest_id=GUEST_A, field="summary", quote=SUMMARIES[GUEST_A]),
+            Evidence(guest_id=GUEST_B, field="summary", quote=SUMMARIES[GUEST_B]),
+        ],
+        missing_information_a=[],
+        missing_information_b=[],
+        uncertainty="Interest is unconfirmed.",
+        restriction_found=False,
+    )
+    guests = {
+        str(GUEST_A): {"summary": SUMMARIES[GUEST_A], "organizer_only_fields": []},
+        str(GUEST_B): {"summary": SUMMARIES[GUEST_B], "organizer_only_fields": []},
+    }
+    await worker.verify_pair(run, pair, guests)
+    assert "English" in provider.instructions[-1]
+
+    run.snapshot = {
+        **run.snapshot,
+        "console": {
+            **run.snapshot["console"],
+            "event": {**run.snapshot["console"]["event"], "language": "es"},
+        },
+    }
+    await worker.verify_pair(run, pair, guests)
+    assert provider.parse_calls == 2
+    assert "Spanish" in provider.instructions[-1]
+    assert "exactly as it appears" in provider.instructions[-1]
