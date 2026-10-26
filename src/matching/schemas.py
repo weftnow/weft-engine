@@ -9,9 +9,6 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
-Language = Literal["en", "es"]
-"""Language of shareable reasons; owned by the Console as ``public.events.language``."""
-
 
 class APIModel(BaseModel):
     """Console-compatible camelCase wire format with Pythonic internal names."""

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from src.config import Settings
 from src.matching.console import ConsoleAdapter
 from src.matching.models import Recommendation, Run, SlotGrant
-from src.matching.schemas import CreateRun, Language
+from src.matching.schemas import CreateRun
 
 
 def session_factory(url: str) -> async_sessionmaker[AsyncSession]:
@@ -41,11 +41,6 @@ def provenance_from_settings(settings: Settings) -> dict[str, Any]:
             "embedding_input": settings.matching_embedding_cost_per_million_usd,
         },
     }
-
-
-def event_language(snapshot: dict[str, Any]) -> Language:
-    """The event's language from a Console snapshot; anything unknown falls back to English."""
-    return "es" if snapshot.get("event", {}).get("language") == "es" else "en"
 
 
 def check_event_size(snapshot: dict[str, Any]) -> None:
@@ -81,7 +76,7 @@ async def create_run(
     mode: str,
     target_guest_id: UUID | None,
     payload: dict[str, Any],
-    provenance: dict[str, Any],
+    provenance: dict[str, str],
     trigger: str = "api",
     change_batch_id: UUID | None = None,
 ) -> Run:
@@ -109,7 +104,7 @@ async def create_run(
         snapshot=payload,
         fingerprint=fingerprint(payload),
         progress={"stage": "waiting"},
-        provenance={**provenance, "language": event_language(payload.get("console", {}))},
+        provenance=provenance,
         usage={},
         trigger=trigger,
         change_batch_id=change_batch_id,

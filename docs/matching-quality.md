@@ -15,7 +15,3 @@ The JSON input contains:
 The evaluator requires at least 60 profiles and 200 unique labeled pairs, two reviewers, held-out labels, recorded live provider calls and versions, recorded latency, spend within the supplied approved budget, both baselines, and zero audited violations. It gates held-out selected-pair precision at 90% and candidate recall at 95%. It reports precision, candidate recall, selected pairs, and guest coverage for all and held-out labels and compares both baselines. An empty selected set has no precision and fails the gate, so an empty result cannot pass by itself.
 
 Use separately generated synthetic benchmark profiles and independently reviewed labels. Include both strong and weak connections, sparse and URL-only profiles, complementary needs/offers, private fields, explicit restrictions, and held-out cases. Do not place real guest profiles or provider payloads in benchmark artifacts. Record the 300-guest live run's actual latency, cost, model/prompt/policy versions, cache/live-call provenance, coverage, and baseline results alongside the report. Until experts supply the labeled dataset and a credentialed run with approved spend is performed, F06 matching quality remains unaccepted.
-
-## Spanish events
-
-For events with `language: "es"`, reviewers must also check that `shareableReasons` are natural Spanish, that every quote is verbatim from the source profile (in its original language), and that no reason code was translated. Record the sample size and reviewer with the provenance `language`.
